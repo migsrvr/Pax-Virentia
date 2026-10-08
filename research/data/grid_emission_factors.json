@@ -1,0 +1,33 @@
+{
+  "version": "2026.1",
+  "source": "Department of Energy Philippines & International Energy Agency",
+  "factors": [
+    {
+      "factor_id": "ph-luzon-visayas-2023",
+      "grid_region": "Luzon-Visayas",
+      "reporting_year": 2023,
+      "gas_basis": "CO2e",
+      "accounting_method": "Operating Margin / Grid Average",
+      "kg_co2e_per_kwh": 0.7122,
+      "reference": "DOE National Grid Emission Factor Report"
+    },
+    {
+      "factor_id": "ph-mindanao-2023",
+      "grid_region": "Mindanao",
+      "reporting_year": 2023,
+      "gas_basis": "CO2e",
+      "accounting_method": "Operating Margin / Grid Average",
+      "kg_co2e_per_kwh": 0.5480,
+      "reference": "DOE National Grid Emission Factor Report"
+    },
+    {
+      "factor_id": "ph-national-iea-2023",
+      "grid_region": "Philippines National",
+      "reporting_year": 2023,
+      "gas_basis": "CO2e",
+      "accounting_method": "IEA Generation Mix",
+      "kg_co2e_per_kwh": 0.6850,
+      "reference": "IEA Emission Factors 2023"
+    }
+  ]
+}
