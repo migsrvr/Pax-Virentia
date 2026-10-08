@@ -1,0 +1,35 @@
+"""Verified opaque sessions and exact-origin CSRF checks for private routes."""
+
+import hashlib
+import secrets
+
+from fastapi import Depends, Request
+
+from app.services.errors import ServiceError
+
+
+def get_repository(request: Request):
+    return request.app.state.repository
+
+
+def get_service(request: Request):
+    return request.app.state.simulations
+
+
+def require_session(request: Request, repository=Depends(get_repository)):
+    token = request.cookies.get("__Host-pv_session")
+    session = repository.authenticate(token) if token else None
+    if session is None:
+        raise ServiceError(401, "authentication_required", "A valid session is required.")
+    return session
+
+
+def require_analyst(request: Request, session=Depends(require_session)):
+    if session["role"] not in ("analyst", "administrator"):
+        raise ServiceError(403, "insufficient_role", "An analyst or administrator role is required.")
+    csrf = request.headers.get("X-CSRF-Token", "")
+    if request.headers.get("Origin") not in request.app.state.allowed_origins or not csrf or not secrets.compare_digest(
+        hashlib.sha256(csrf.encode()).hexdigest(), session["csrf_hash"]
+    ):
+        raise ServiceError(403, "csrf_rejected", "A trusted Origin and valid CSRF token are required.")
+    return session

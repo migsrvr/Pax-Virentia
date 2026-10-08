@@ -1,13 +1,17 @@
 """Application configuration and environment settings."""
 
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
+
     PROJECT_NAME: str = "Pax Virentia API"
     VERSION: str = "0.1.0"
     API_V1_STR: str = "/api/v1"
+    CODE_VERSION: str = "unreleased"
+    ALLOWED_ORIGINS: list[str] = ["http://localhost:5173"]
 
     # Database
     DATABASE_URL: str = Field(
@@ -22,10 +26,5 @@ class Settings(BaseSettings):
     # External AI Integration
     GEMINI_API_KEY: str = Field(default="", description="Google Gemini API Key")
     GEMINI_MODEL: str = Field(default="gemini-2.5-flash", description="Pinned Gemini model identifier")
-
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
-
 
 settings = Settings()

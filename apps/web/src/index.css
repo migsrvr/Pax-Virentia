@@ -1,0 +1,65 @@
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Source+Sans+3:ital,wght@0,400;0,600;0,700;1,400&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --river-teal: #135D66;
+  --canopy-green: #41745B;
+  --slate-ink: #24343D;
+  --mist: #F3F7F8;
+  --evidence-amber: #8A5700;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  font-family: 'Source Sans 3', system-ui, -apple-system, sans-serif;
+  background: var(--mist);
+  color: var(--slate-ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, .font-heading {
+  font-family: 'Manrope', system-ui, sans-serif;
+}
+
+.tnum {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+}
+
+/* Visible keyboard focus */
+:focus-visible {
+  outline: 3px solid #135D66;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Subtle card */
+.pv-card {
+  background: #fff;
+  border: 1px solid #D8E2E6;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(36, 52, 61, 0.05);
+}
+
+/* Thin scrollbars for rails */
+.pv-scroll::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+.pv-scroll::-webkit-scrollbar-thumb {
+  background: #D8E2E6;
+  border-radius: 9999px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

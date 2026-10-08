@@ -1,0 +1,307 @@
+import type {
+  DatasetVersion,
+  GridFactor,
+  MetricDelta,
+  PlantObservation,
+  ScenarioRevision,
+  SimulationRun,
+} from '../types';
+
+export const WORKSPACE = {
+  name: 'Pax Virentia Research Workspace',
+  plant: 'Representative Plant — Luzon-Visayas Grid',
+  context: 'Representative plant · Offline scenario analysis',
+  descriptor: 'Water-treatment scenario analysis',
+  tagline: 'Compare scenarios. Understand the tradeoffs.',
+  timezone: 'Asia/Manila',
+};
+
+export const CURRENT_USER = {
+  name: 'Analyst',
+  email: 'analyst@paxvirentia.local',
+  role: 'Analyst' as const,
+};
+
+export const GRID_FACTORS: GridFactor[] = [
+  {
+    factor_id: 'ph-luzon-visayas-2023',
+    grid_region: 'Luzon-Visayas',
+    reporting_year: 2023,
+    gas_basis: 'CO2e',
+    accounting_method: 'Operating Margin / Grid Average',
+    kg_co2e_per_kwh: 0.7122,
+    reference: 'DOE National Grid Emission Factor Report',
+  },
+  {
+    factor_id: 'ph-mindanao-2023',
+    grid_region: 'Mindanao',
+    reporting_year: 2023,
+    gas_basis: 'CO2e',
+    accounting_method: 'Operating Margin / Grid Average',
+    kg_co2e_per_kwh: 0.548,
+    reference: 'DOE National Grid Emission Factor Report',
+  },
+  {
+    factor_id: 'ph-national-iea-2023',
+    grid_region: 'Philippines National',
+    reporting_year: 2023,
+    gas_basis: 'CO2e',
+    accounting_method: 'IEA Generation Mix',
+    kg_co2e_per_kwh: 0.685,
+    reference: 'IEA Emission Factors 2023',
+  },
+];
+
+export const PLANT_OBSERVATIONS: PlantObservation[] = [
+  {
+    period_start: '2026-01-01T00:00:00+08:00',
+    period_end: '2026-01-01T23:59:59+08:00',
+    volume_m3: 12000,
+    electricity_kwh: 4800,
+    pump_hours: 24,
+    mixing_hours: 18,
+    chemical_dose_mg_per_l: 3.2,
+    water_turbidity_ntu: 4.5,
+    ph_level: 7.2,
+    notes: 'Baseline steady operation',
+  },
+  {
+    period_start: '2026-01-02T00:00:00+08:00',
+    period_end: '2026-01-02T23:59:59+08:00',
+    volume_m3: 12500,
+    electricity_kwh: 5000,
+    pump_hours: 24,
+    mixing_hours: 20,
+    chemical_dose_mg_per_l: 3.4,
+    water_turbidity_ntu: 5.1,
+    ph_level: 7.1,
+    notes: 'Baseline steady operation',
+  },
+  {
+    period_start: '2026-01-03T00:00:00+08:00',
+    period_end: '2026-01-03T23:59:59+08:00',
+    volume_m3: 11800,
+    electricity_kwh: 4720,
+    pump_hours: 23.5,
+    mixing_hours: 17.5,
+    chemical_dose_mg_per_l: 3.1,
+    water_turbidity_ntu: 4.2,
+    ph_level: 7.3,
+    notes: 'Baseline steady operation',
+  },
+  {
+    period_start: '2026-01-04T00:00:00+08:00',
+    period_end: '2026-01-04T23:59:59+08:00',
+    volume_m3: 13100,
+    electricity_kwh: 5240,
+    pump_hours: 24,
+    mixing_hours: 21,
+    chemical_dose_mg_per_l: 3.5,
+    water_turbidity_ntu: 5.8,
+    ph_level: 7.0,
+    notes: 'High turbidity event',
+  },
+  {
+    period_start: '2026-01-05T00:00:00+08:00',
+    period_end: '2026-01-05T23:59:59+08:00',
+    volume_m3: 12200,
+    electricity_kwh: 4880,
+    pump_hours: 24,
+    mixing_hours: 18.5,
+    chemical_dose_mg_per_l: 3.3,
+    water_turbidity_ntu: 4.6,
+    ph_level: 7.2,
+    notes: 'Baseline steady operation',
+  },
+];
+
+export const DATASETS: DatasetVersion[] = [
+  {
+    id: 'ds-plant-jan26',
+    name: 'Plant observations — Jan 2026',
+    version: 'v1.2',
+    rows: 5,
+    content_hash: 'sha256:9f2c…a41b',
+    quality_score: 94,
+    source: 'Plant logbook CSV · measured',
+    period: '01–05 Jan 2026 · Asia/Manila',
+    status: 'validated',
+    issues: [
+      { level: 'warning', field: 'water_turbidity_ntu', message: 'High turbidity on 04 Jan flagged but retained with analyst note.', rows_affected: 1 },
+      { level: 'info', field: 'ph_level', message: 'All pH values within 7.0–7.3 operating band.', rows_affected: 0 },
+    ],
+  },
+  {
+    id: 'ds-plant-dec25',
+    name: 'Plant observations — Dec 2025',
+    version: 'v1.0',
+    rows: 31,
+    content_hash: 'sha256:77de…02c9',
+    quality_score: 81,
+    source: 'Plant logbook CSV · measured + assumed tariff',
+    period: '01–31 Dec 2025 · Asia/Manila',
+    status: 'needs_review',
+    issues: [
+      { level: 'error', field: 'electricity_kwh', message: '2 rows missing energy; imputation blocked — analyst must resolve.', rows_affected: 2 },
+      { level: 'warning', field: 'chemical_dose_mg_per_l', message: '1 outlier retained with detection rule noted.', rows_affected: 1 },
+    ],
+  },
+];
+
+export const SCENARIOS: ScenarioRevision[] = [
+  {
+    id: 'scn-baseline-r3',
+    name: 'Baseline — Conventional operation',
+    revision_no: 3,
+    kind: 'baseline',
+    updated_at: '2026-10-07 14:20 PHT',
+    volume_m3: 61600,
+    period: '01–05 Jan 2026',
+    tariff_php_per_kwh: 10.45,
+    technology: 'Conventional spec v1.1 (verified)',
+    factor_id: 'ph-luzon-visayas-2023',
+  },
+  {
+    id: 'scn-paxsilica-r2',
+    name: 'Pax Silica — Intervention draft',
+    revision_no: 2,
+    kind: 'intervention',
+    updated_at: '2026-10-08 09:12 PHT',
+    volume_m3: 61600,
+    period: '01–05 Jan 2026',
+    tariff_php_per_kwh: 10.45,
+    technology: 'Pax Silica spec v0.4 (unverified — technical source pending)',
+    factor_id: 'ph-luzon-visayas-2023',
+  },
+];
+
+export const RUNS: SimulationRun[] = [
+  {
+    id: 'run-baseline-r3',
+    scenario_name: 'Baseline — Conventional operation',
+    revision_no: 3,
+    kind: 'baseline',
+    status: 'succeeded',
+    started_at: '2026-10-07 14:22 PHT',
+    ended_at: '2026-10-07 14:22:41 PHT',
+    energy_kwh: 24640,
+    emissions_kgco2e: 17548.6,
+    opex_php: 312458,
+    ecology_status: 'not_estimable',
+  },
+  {
+    id: 'run-paxsilica-r2',
+    scenario_name: 'Pax Silica — Intervention draft',
+    revision_no: 2,
+    kind: 'intervention',
+    status: 'succeeded',
+    started_at: '2026-10-08 09:14 PHT',
+    ended_at: '2026-10-08 09:14:38 PHT',
+    energy_kwh: 22176,
+    emissions_kgco2e: 15793.7,
+    opex_php: 289120,
+    ecology_status: 'not_estimable',
+  },
+  {
+    id: 'run-paxsilica-r3',
+    scenario_name: 'Pax Silica — Sensitivity +mixing',
+    revision_no: 3,
+    kind: 'intervention',
+    status: 'running',
+    started_at: '2026-10-09 01:58 PHT',
+    energy_kwh: null,
+    emissions_kgco2e: null,
+    opex_php: null,
+    ecology_status: 'pending',
+  },
+];
+
+export const COMPARISON_DELTAS: MetricDelta[] = [
+  {
+    key: 'energy',
+    label: 'Electricity demand',
+    unit: 'kWh / period',
+    baseline: 24640,
+    intervention: 22176,
+    delta: -2464,
+    delta_pct: -10.0,
+    baseline_status: 'valid',
+    intervention_status: 'valid',
+  },
+  {
+    key: 'emissions',
+    label: 'Electricity-associated emissions',
+    unit: 'kgCO₂e / period',
+    baseline: 17548.6,
+    intervention: 15793.7,
+    delta: -1754.9,
+    delta_pct: -10.0,
+    baseline_status: 'valid',
+    intervention_status: 'valid',
+  },
+  {
+    key: 'opex',
+    label: 'Period operating cost',
+    unit: 'PHP / period',
+    baseline: 312458,
+    intervention: 289120,
+    delta: -23338,
+    delta_pct: -7.47,
+    baseline_status: 'valid',
+    intervention_status: 'valid',
+  },
+  {
+    key: 'ecology',
+    label: 'Ecological indicator',
+    unit: '—',
+    baseline: null,
+    intervention: null,
+    delta: null,
+    delta_pct: null,
+    baseline_status: 'not_estimable',
+    intervention_status: 'not_estimable',
+  },
+];
+
+export const MODEL_REGISTRY = [
+  {
+    module: 'energy',
+    algorithm: 'deterministic v1.3',
+    status: 'approved',
+    training_hash: 'n/a (physics)',
+    evaluated: 'Hand-worked fixture ±0.5%',
+    ranges: '4,000–6,000 kWh/day',
+  },
+  {
+    module: 'carbon',
+    algorithm: 'grid-factor lookup v2026.1',
+    status: 'approved',
+    training_hash: 'factor-set ph-2026.1',
+    evaluated: 'Arithmetic fixture 100 kWh → 50 kg at 0.5 kg/kWh',
+    ranges: 'Luzon-Visayas · Mindanao · National',
+  },
+  {
+    module: 'economics',
+    algorithm: 'opex summation v1.1',
+    status: 'approved',
+    training_hash: 'tariff 10.45 PHP/kWh (Dec 2025)',
+    evaluated: 'Fixture PHP 1,000 at 100 kWh × PHP 10',
+    ranges: 'PHP, same volume/period required',
+  },
+  {
+    module: 'ecology',
+    algorithm: 'no approved model',
+    status: 'not_estimable',
+    training_hash: '—',
+    evaluated: 'No paired observations / thresholds',
+    ranges: 'Unavailable until evidence gate met',
+  },
+];
+
+export function formatNum(v: number | null, digits = 0): string {
+  if (v === null || Number.isNaN(v)) return '—';
+  return v.toLocaleString('en-PH', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+}
