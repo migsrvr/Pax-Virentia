@@ -125,7 +125,7 @@ class SimulationRepository:
         timestamp = "TIMESTAMPTZ" if self.postgres else "TEXT"
         binary = "BYTEA" if self.postgres else "BLOB"
         statements = [
-            f"CREATE TABLE IF NOT EXISTS users (id {id_type} PRIMARY KEY, role TEXT NOT NULL CHECK(role IN ('analyst','reviewer','administrator')), active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)))",
+            f"CREATE TABLE IF NOT EXISTS users (id {id_type} PRIMARY KEY, role TEXT NOT NULL CHECK(role IN ('analyst','reviewer','administrator')), email TEXT, password_hash TEXT, display_name TEXT, active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)))",
             f"CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id {id_type} NOT NULL REFERENCES users(id), csrf_hash TEXT NOT NULL, expires_at {timestamp} NOT NULL, revoked INTEGER NOT NULL DEFAULT 0 CHECK(revoked IN (0,1)))",
             f"CREATE TABLE IF NOT EXISTS scenarios (id {id_type} PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('baseline','intervention')), created_by {id_type} NOT NULL, created_at {timestamp} NOT NULL)",
             f"CREATE TABLE IF NOT EXISTS scenario_revisions (id {id_type} PRIMARY KEY, scenario_id {id_type} NOT NULL REFERENCES scenarios(id), revision_no INTEGER NOT NULL CHECK(revision_no>0), parameters {json_type} NOT NULL, created_by {id_type} NOT NULL, created_at {timestamp} NOT NULL, UNIQUE(scenario_id,revision_no))",
@@ -136,16 +136,25 @@ class SimulationRepository:
             f"CREATE TABLE IF NOT EXISTS dataset_versions (id {id_type} PRIMARY KEY, source_ref TEXT NOT NULL, evidence_status TEXT NOT NULL, content_hash TEXT NOT NULL, original_csv {binary} NOT NULL, quality_report {json_type} NOT NULL, schema_version TEXT NOT NULL, created_by {id_type} NOT NULL, created_at {timestamp} NOT NULL)",
             "CREATE INDEX IF NOT EXISTS jobs_ready_idx ON jobs(status, available_at)",
             "CREATE INDEX IF NOT EXISTS runs_revision_idx ON simulation_runs(scenario_revision_id, created_at)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS users_email_idx ON users(email)",
         ]
         with self.transaction() as connection:
             for statement in statements:
                 connection.execute(statement)
 
-    def create_user(self, user_id, role):
+    def create_user(self, user_id, role, email=None, password_hash=None, display_name=None):
         """Provisioning hook; no public registration route is provided."""
+        values = {"id": user_id, "role": role, "email": email, "hash": password_hash, "name": display_name}
         with self.transaction() as c:
-            c.execute("INSERT INTO users(id,role,active) VALUES(:id,:role,1) ON CONFLICT(id) DO UPDATE SET role=:role",
-                      {"id": user_id, "role": role})
+            c.execute("INSERT INTO users(id,role,email,password_hash,display_name,active) VALUES(:id,:role,:email,:hash,:name,1) "
+                      "ON CONFLICT(id) DO UPDATE SET role=excluded.role, email=COALESCE(excluded.email, users.email), "
+                      "password_hash=COALESCE(excluded.password_hash, users.password_hash), display_name=COALESCE(excluded.display_name, users.display_name)",
+                      values)
+
+    def find_user_by_email(self, email):
+        with self.transaction() as c:
+            return c.one("SELECT id,role,active,email,password_hash,display_name FROM users WHERE email=:email",
+                         {"email": email})
 
     def create_session(self, user_id, lifetime_hours=24):
         token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
@@ -158,8 +167,13 @@ class SimulationRepository:
 
     def authenticate(self, token):
         with self.transaction() as c:
-            return c.one("SELECT s.user_id,s.csrf_hash,u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE token_hash=:token AND s.revoked=0 AND u.active=1 AND s.expires_at>:now",
+            return c.one("SELECT s.user_id,s.csrf_hash,u.role,u.email,u.display_name FROM sessions s JOIN users u ON u.id=s.user_id WHERE token_hash=:token AND s.revoked=0 AND u.active=1 AND s.expires_at>:now",
                          {"token": hashlib.sha256(token.encode()).hexdigest(), "now": utc_now()})
+
+    def revoke_session(self, token):
+        with self.transaction() as c:
+            c.execute("UPDATE sessions SET revoked=1 WHERE token_hash=:token",
+                      {"token": hashlib.sha256(token.encode()).hexdigest()})
 
     def create_scenario(self, name, kind, parameters, user_id):
         scenario_id = str(uuid4())

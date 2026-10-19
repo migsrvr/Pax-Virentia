@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Source+Sans+3:ital,wght@0,400;0,600;0,700;1,400&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -17,14 +17,14 @@ html, body, #root {
 }
 
 body {
-  font-family: 'Source Sans 3', system-ui, -apple-system, sans-serif;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
   background: var(--mist);
   color: var(--slate-ink);
   -webkit-font-smoothing: antialiased;
 }
 
 h1, h2, h3, .font-heading {
-  font-family: 'Manrope', system-ui, sans-serif;
+  font-family: 'Inter', system-ui, sans-serif;
 }
 
 .tnum {
@@ -34,7 +34,7 @@ h1, h2, h3, .font-heading {
 
 /* Visible keyboard focus */
 :focus-visible {
-  outline: 3px solid #135D66;
+  outline: 3px solid #167D79;
   outline-offset: 2px;
   border-radius: 4px;
 }

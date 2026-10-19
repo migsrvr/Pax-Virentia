@@ -7,6 +7,8 @@ from fastapi import Depends, Request
 
 from app.services.errors import ServiceError
 
+SESSION_COOKIE = "__Host-pv_session"
+
 
 def get_repository(request: Request):
     return request.app.state.repository
@@ -17,7 +19,7 @@ def get_service(request: Request):
 
 
 def require_session(request: Request, repository=Depends(get_repository)):
-    token = request.cookies.get("__Host-pv_session")
+    token = request.cookies.get(SESSION_COOKIE)
     session = repository.authenticate(token) if token else None
     if session is None:
         raise ServiceError(401, "authentication_required", "A valid session is required.")

@@ -3,7 +3,7 @@
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, AwareDatetime, BaseModel, ConfigDict, EmailStr, Field
 
 
 Nonnegative = Annotated[float, Field(ge=0, allow_inf_nan=False, strict=True)]
@@ -90,3 +90,9 @@ class SubmitRun(Contract):
 class CompareRuns(Contract):
     baseline_run_id: UUID
     intervention_run_id: UUID
+
+
+class LoginRequest(Contract):
+    email: EmailStr
+    password: Annotated[str, Field(min_length=1, max_length=200)]
+    remember: bool = Field(default=False, validation_alias=AliasChoices("remember", "remember_me"))
