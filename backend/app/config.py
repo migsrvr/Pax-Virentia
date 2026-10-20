@@ -11,7 +11,11 @@ class Settings(BaseSettings):
     VERSION: str = "0.1.0"
     API_V1_STR: str = "/api/v1"
     CODE_VERSION: str = "unreleased"
-    ALLOWED_ORIGINS: list[str] = ["http://localhost:5173"]
+    ALLOWED_ORIGINS: list[str] = ["http://localhost:5173", "http://localhost:5174"]
+
+    # Sessions
+    SESSION_LIFETIME_HOURS: int = 24
+    SESSION_REMEMBER_HOURS: int = 720
 
     # Database
     DATABASE_URL: str = Field(

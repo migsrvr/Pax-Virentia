@@ -1,76 +1,110 @@
 import { NavLink } from 'react-router-dom';
 import {
-  Beaker,
-  ClipboardCheck,
-  Database,
+  BookOpen,
+  ChartColumn,
+  ChevronDown,
+  ExternalLink,
   FileText,
+  GitCompareArrows,
+  Globe,
+  Info,
   LayoutDashboard,
-  Settings,
+  Lightbulb,
+  SlidersHorizontal,
 } from 'lucide-react';
 import clsx from 'clsx';
-import Logo from '../common/Logo';
-import { WORKSPACE } from '../../services/mockData';
 
-const NAV = [
-  { to: '/', label: 'Overview', icon: LayoutDashboard, end: true, job: 'Next action & activity' },
-  { to: '/datasets', label: 'Datasets', icon: Database, job: 'Evidence & quality' },
-  { to: '/scenarios', label: 'Scenarios', icon: Beaker, job: 'Baseline & intervention' },
-  { to: '/results', label: 'Results', icon: ClipboardCheck, job: 'Runs & comparison' },
-  { to: '/reports', label: 'Reports', icon: FileText, job: 'Exports & publication' },
-  { to: '/settings', label: 'Settings', icon: Settings, job: 'Factors & models' },
+const WORKSPACE_NAV = [
+  { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
+  { to: '/scenarios', label: 'Simulations', icon: SlidersHorizontal },
+  { to: '/results', label: 'Results', icon: ChartColumn },
+  { to: '/compare', label: 'Compare', icon: GitCompareArrows },
+  { to: '/recommendations', label: 'Recommendations', icon: Lightbulb, badge: '6' },
+  { to: '/reports', label: 'Reports', icon: FileText },
 ];
+
+const REFERENCE_NAV = [
+  { to: '/methodology', label: 'Methodology', icon: BookOpen },
+  { to: '/public/snapshot', label: 'Public portal', icon: Globe, external: true },
+];
+
+function NavItem({ item }: { item: (typeof WORKSPACE_NAV)[number] & { external?: boolean } }) {
+  return (
+    <NavLink
+      to={item.to}
+      end={'end' in item ? item.end : undefined}
+      target={item.external ? '_blank' : undefined}
+      rel={item.external ? 'noreferrer' : undefined}
+      className={({ isActive }) =>
+        clsx(
+          'flex h-11 items-center gap-3 rounded-lg px-3 text-sm font-medium transition-colors',
+          isActive
+            ? 'bg-pv-mint text-pv-forest'
+            : 'text-pv-side-text hover:bg-white/5 hover:text-white',
+        )
+      }
+    >
+      {({ isActive }) => (
+        <>
+          <item.icon
+            size={20}
+            className={clsx('shrink-0', isActive ? 'text-pv-teal' : 'text-pv-side-muted')}
+            aria-hidden="true"
+          />
+          <span className="truncate">{item.label}</span>
+          {'badge' in item && item.badge ? (
+            <span
+              className={clsx(
+                'ml-auto inline-flex h-5 min-w-6 items-center justify-center rounded-full px-2 text-xs font-medium text-pv-mint',
+                isActive ? 'bg-pv-forest' : 'bg-pv-pine-border',
+              )}
+            >
+              {item.badge}
+            </span>
+          ) : null}
+          {item.external ? (
+            <ExternalLink size={16} className="ml-auto shrink-0 text-pv-side-muted" aria-hidden="true" />
+          ) : null}
+        </>
+      )}
+    </NavLink>
+  );
+}
 
 export default function Sidebar() {
   return (
-    <aside className="flex h-full w-[264px] shrink-0 flex-col border-r border-slate-ink-border bg-white">
-      <div className="border-b border-slate-ink-border p-4">
-        <Logo />
-        <div className="mt-3 rounded-lg bg-mist px-3 py-2">
-          <div className="truncate text-[12.5px] font-bold text-slate-ink">{WORKSPACE.plant}</div>
-          <div className="text-[12px] text-slate-ink-light">{WORKSPACE.context}</div>
+    <aside className="hidden h-full w-[240px] shrink-0 flex-col bg-pv-forest lg:flex">
+      <nav aria-label="Workspace" className="flex flex-1 flex-col gap-1 overflow-y-auto p-4 py-6">
+        <div className="mb-5 flex items-center gap-2 rounded-lg border border-pv-pine-border bg-pv-pine p-3">
+          <div className="min-w-0 flex-1">
+            <div className="text-xs leading-4 text-pv-side-muted">Representative plant</div>
+            <div className="mt-0.5 text-sm font-medium leading-5 text-white">
+              Sample WTP · Luzon–Visayas
+            </div>
+          </div>
+          <ChevronDown size={16} className="shrink-0 text-pv-side-muted" aria-hidden="true" />
         </div>
-      </div>
-      <nav aria-label="Workspace" className="flex-1 overflow-y-auto p-2.5">
-        <ul className="space-y-1">
-          {NAV.map((item) => (
-            <li key={item.to}>
-              <NavLink
-                to={item.to}
-                end={item.end}
-                className={({ isActive }) =>
-                  clsx(
-                    'group flex items-center gap-3 rounded-lg px-3 py-2.5 transition-colors',
-                    isActive
-                      ? 'bg-river-teal text-white'
-                      : 'text-slate-ink hover:bg-mist',
-                  )
-                }
-              >
-                {({ isActive }) => (
-                  <>
-                    <item.icon size={18} className={isActive ? 'text-white' : 'text-river-teal'} aria-hidden />
-                    <span>
-                      <span className="block text-[14.5px] font-bold leading-5">{item.label}</span>
-                      <span
-                        className={clsx(
-                          'block text-[12px] leading-4',
-                          isActive ? 'text-white/75' : 'text-slate-ink-muted',
-                        )}
-                      >
-                        {item.job}
-                      </span>
-                    </span>
-                  </>
-                )}
-              </NavLink>
-            </li>
-          ))}
-        </ul>
+
+        <div className="px-3 pb-1 pt-4 text-xs font-medium leading-4 text-pv-side-muted">Workspace</div>
+        {WORKSPACE_NAV.map((item) => (
+          <NavItem key={item.to} item={item} />
+        ))}
+
+        <div className="px-3 pb-1 pt-5 text-xs font-medium leading-4 text-pv-side-muted">Reference</div>
+        {REFERENCE_NAV.map((item) => (
+          <NavItem key={item.to} item={item} />
+        ))}
+
+        <div className="mt-auto flex gap-3 border-t border-pv-pine-border pt-4">
+          <Info size={20} className="mt-0.5 shrink-0 text-pv-mint" aria-hidden="true" />
+          <div className="min-w-0">
+            <div className="text-xs font-semibold leading-4 text-white">Offline simulation</div>
+            <p className="mt-1 text-xs leading-4 text-pv-side-muted">
+              Simulated estimates from sample data. No live plant monitoring or sensor feeds.
+            </p>
+          </div>
+        </div>
       </nav>
-      <div className="border-t border-slate-ink-border p-4 text-[12px] leading-5 text-slate-ink-muted">
-        <div className="font-bold text-slate-ink-light">Offline scenario analysis</div>
-        <div>No live plant synchronization. Runs use frozen revisions.</div>
-      </div>
     </aside>
   );
 }

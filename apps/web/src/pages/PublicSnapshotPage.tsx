@@ -60,7 +60,7 @@ export default function PublicSnapshotPage() {
         </div>
 
         <div className="mt-6 flex gap-2">
-          <Link to="/" className="rounded-lg bg-river-teal px-4 py-2 text-[14px] font-bold text-white">
+          <Link to="/login" className="rounded-lg bg-river-teal px-4 py-2 text-[14px] font-bold text-white">
             Open workspace sign-in
           </Link>
           <span className="px-2 py-2 text-[13px] text-slate-ink-muted">

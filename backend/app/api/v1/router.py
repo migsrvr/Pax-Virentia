@@ -2,9 +2,9 @@
 
 from fastapi import APIRouter
 
-from app.api.v1 import comparisons, datasets, runs, scenarios
+from app.api.v1 import auth, comparisons, datasets, runs, scenarios
 
 
 api_router = APIRouter()
-for router in (scenarios.router, runs.router, comparisons.router, datasets.router):
+for router in (auth.router, scenarios.router, runs.router, comparisons.router, datasets.router):
     api_router.include_router(router)
