@@ -15,21 +15,31 @@ from app.services.auth import hash_password
 
 
 def main():
-    email = os.environ.get("SEED_USER_EMAIL", "ana.santos@example.com").strip().lower()
-    password = os.environ.get("SEED_USER_PASSWORD", "pax-virentia-dev")
-    name = os.environ.get("SEED_USER_NAME", "Ana Santos")
-    role = os.environ.get("SEED_USER_ROLE", "analyst")
     repository = SimulationRepository(settings.DATABASE_URL)
     try:
         repository.create_schema()
-        existing = repository.find_user_by_email(email)
-        user_id = existing["id"] if existing else str(uuid4())
-        repository.create_user(user_id, role, email=email, password_hash=hash_password(password), display_name=name)
+        seed_users = [
+            (
+                getattr(settings, "SEED_USER_EMAIL", "rivera.dev.miggy@gmail.com").strip().lower(),
+                getattr(settings, "SEED_USER_PASSWORD", "pax-virentia-dev"),
+                getattr(settings, "SEED_USER_NAME", "Miggy"),
+                getattr(settings, "SEED_USER_ROLE", "analyst"),
+            ),
+            (
+                "ana.santos@example.com",
+                "pax-virentia-dev",
+                "Ana Santos",
+                "analyst",
+            ),
+        ]
+        for email, password, name, role in seed_users:
+            existing = repository.find_user_by_email(email)
+            user_id = existing["id"] if existing else str(uuid4())
+            repository.create_user(user_id, role, email=email, password_hash=hash_password(password), display_name=name)
+            print(f"Provisioned account: {email} / {password} (role: {role})")
     finally:
         repository.close()
     print("Store schema ready.")
-    print(f"Sign in with: {email} / {password} (role: {role})")
-    print("Override with SEED_USER_EMAIL, SEED_USER_PASSWORD, SEED_USER_NAME, SEED_USER_ROLE.")
 
 
 if __name__ == "__main__":

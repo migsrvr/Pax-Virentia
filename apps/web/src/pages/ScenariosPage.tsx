@@ -1,663 +1,197 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import clsx from 'clsx';
-import {
-  ArrowRight,
-  Check,
-  ChevronDown,
-  CircleCheck,
-  Droplet,
-  FlaskConical,
-  TriangleAlert,
-} from 'lucide-react';
-import { Chip, FieldLabel, SectionCard, btnGhost, btnPrimary, btnSecondary } from './scenarios/shared';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { Check, ArrowRight } from 'lucide-react';
+import { api } from '../services/api';
+import { buildParameters, errorMessage, hydrateDraft, initialDraft, loadSavedScenario, validateDraft } from '../services/simulation';
+import type { Draft, Factor, Revision, Scenario, Technology } from '../services/simulation';
+import { dismissRun, foregroundRun, retryRun, submitRun, useRunState } from '../services/runLifecycle';
+import { Chip, SectionCard, btnPrimary, btnSecondary } from './scenarios/shared';
 import OperatingConditionsStep from './scenarios/OperatingConditionsStep';
 import CostsEmissionStep from './scenarios/CostsEmissionStep';
 import ReviewRunStep from './scenarios/ReviewRunStep';
 import RunProgressDialog from './scenarios/RunProgressDialog';
 import RunCompleteDialog from './scenarios/RunCompleteDialog';
 import RunFailedDialog from './scenarios/RunFailedDialog';
-import DevStatePreview from '../components/dev/DevStatePreview';
-import {
-  dismissRun,
-  foregroundRun,
-  retryRun,
-  submitRun,
-  useRunState,
-} from '../services/runLifecycle';
 
-/* U03 · Setup 1 — Scenario and treatment process (frame 29:2). Sample values as shown in the design. */
-
-const WIZARD_STEPS = [
-  { title: 'Scenario and process' },
-  { title: 'Operating conditions' },
-  { title: 'Costs and emission factor' },
-  { title: 'Review and run' },
-];
-
-const COMPARE_OPTIONS = [
-  { id: 'r-0139', label: 'Baseline operation · rev 3 · run R-0139' },
-  { id: 'r-0132', label: 'Baseline operation · rev 2 · run R-0132' },
-];
-
-const DATASET_OPTIONS = [
-  { id: 'obs-v1.2', label: 'Sample plant observations v1.2 · 1–5 Jan 2026' },
-  { id: 'obs-v1.1', label: 'Sample plant observations v1.1 · 12–16 Dec 2025' },
-];
-
-const SCENARIO_TYPES = [
-  {
-    id: 'baseline',
-    title: 'Baseline',
-    body: 'The reference that other scenarios are compared with.',
-  },
-  {
-    id: 'intervention',
-    title: 'Intervention',
-    body: 'A proposed change, compared with a baseline.',
-  },
-] as const;
-
-const TREATMENTS = [
-  {
-    id: 'conventional',
-    icon: FlaskConical,
-    title: 'Conventional treatment',
-    body: "Coagulation, flocculation, sedimentation, filtration and disinfection at today's settings.",
-    spec: 'Specification v1.1',
-    chip: { label: 'Assumed values', tone: 'neutral' as const },
-  },
-  {
-    id: 'pax-silica',
-    icon: Droplet,
-    title: 'Pax Silica intervention',
-    body: 'Prospective treatment step with lower mixer power and coagulant demand.',
-    spec: 'Specification v0.4',
-    chip: { label: 'Unverified', tone: 'warn' as const },
-  },
-] as const;
-
-const PROCESS_UNITS = [
-  {
-    unit: 'Raw-water and transfer pumping',
-    modeled: true,
-    estimate: 'Electricity from pump power × duty hours',
-  },
-  {
-    unit: 'Coagulant dosing and mixing',
-    modeled: true,
-    estimate: 'Mixer electricity, coagulant use and cost',
-  },
-  { unit: 'Sedimentation', modeled: false, estimate: 'No energy data in this version' },
-  { unit: 'Filtration', modeled: false, estimate: 'No energy data in this version' },
-  { unit: 'Disinfection', modeled: false, estimate: 'No energy data in this version' },
-];
-
-const EVIDENCE_LABELS = [
-  {
-    label: 'Sample data',
-    tone: 'mint' as const,
-    body: 'From the sample plant dataset used in this prototype.',
-  },
-  { label: 'Assumed', tone: 'neutral' as const, body: 'A value your team chose; not measured.' },
-  {
-    label: 'Externally sourced',
-    tone: 'info' as const,
-    body: 'From a cited publication, such as a DOE grid factor.',
-  },
-  { label: 'Unverified', tone: 'warn' as const, body: 'Not yet confirmed by a technical source.' },
-];
-
-const SETUP_CHECKS = [
-  { ok: true, text: 'Name and type set' },
-  { ok: true, text: 'Completed baseline selected' },
-  { ok: false, text: 'Unverified specification · allowed, will be labeled' },
-];
-
-const AUTOSAVED_AT = ['10:04', '10:06', '10:08', '10:11'];
-
-function SelectControl({
-  value,
-  onChange,
-  options,
-  label,
-}: {
-  value: string;
-  onChange: (value: string) => void;
-  options: { id: string; label: string }[];
-  label: string;
-}) {
-  return (
-    <div className="relative">
-      <select
-        aria-label={label}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="h-11 w-full appearance-none rounded-lg border border-pv-input-border bg-white pl-3 pr-10 text-[14px] leading-5 text-pv-ink outline-none focus:border-pv-teal"
-      >
-        {options.map((option) => (
-          <option key={option.id} value={option.id}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-      <ChevronDown
-        size={16}
-        className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-pv-ink"
-        aria-hidden="true"
-      />
-    </div>
-  );
-}
-
-function RadioDot({ selected }: { selected: boolean }) {
-  return (
-    <span
-      className={clsx(
-        'flex h-5 w-5 shrink-0 items-center justify-center rounded-full border transition-colors',
-        selected ? 'border-pv-teal bg-white' : 'border-[#767676] bg-white',
-      )}
-      aria-hidden="true"
-    >
-      {selected && <span className="h-3 w-3 rounded-full bg-pv-teal" />}
-    </span>
-  );
-}
+const steps = ['Scenario and process', 'Operating conditions', 'Costs and emission factor', 'Review and run'];
 
 export default function ScenariosPage() {
+  const [params] = useSearchParams();
+  const scenarioId = params.get('scenarioId');
+  return <ScenarioEditor key={scenarioId ?? 'new'} scenarioId={scenarioId} />;
+}
+
+function ScenarioEditor({ scenarioId }: { scenarioId: string | null }) {
   const navigate = useNavigate();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const preview = import.meta.env.DEV ? searchParams.get('preview') : null;
+  const queryClient = useQueryClient();
   const run = useRunState();
   const [step, setStep] = useState(1);
-  const [name, setName] = useState('Pax Silica pilot');
-  const [compareId, setCompareId] = useState('r-0139');
-  const [scenarioType, setScenarioType] = useState<'baseline' | 'intervention'>('intervention');
-  const [datasetId, setDatasetId] = useState('obs-v1.2');
-  const [description, setDescription] = useState(
-    'Pilot of the Pax Silica treatment step at current flow and pumping. Check mixer power and coagulant demand against the unverified specification.',
-  );
-  const [treatmentId, setTreatmentId] = useState<'conventional' | 'pax-silica'>('pax-silica');
-
-  const clearPreview = () => {
-    if (preview === null) return;
-    const next = new URLSearchParams(searchParams);
-    next.delete('preview');
-    setSearchParams(next, { replace: true });
+  const [draft, setDraft] = useState<Draft>({ ...initialDraft });
+  const [busy, setBusy] = useState(false);
+  const [errors, setErrors] = useState<string[]>([]);
+  const [notice, setNotice] = useState('');
+  const [hydrated, setHydrated] = useState(false);
+  const [hydrationError, setHydrationError] = useState('');
+  const errorRef = useRef<HTMLDivElement>(null);
+  const operation = useRef(false);
+  const saved = useRef<{ scenarioId: string; name: string; kind: Draft['kind']; signature: string; revision: Revision }>();
+  const catalogs = useQuery({ queryKey: ['scenario-catalogs'], refetchOnMount: 'always', queryFn: async () => {
+    const [technologies, factors] = await Promise.all([
+      api.get<{ items: Technology[] }>('/catalogs/technologies'),
+      api.get<{ items: Factor[] }>('/catalogs/factors'),
+    ]);
+    return { technologies: technologies.items, factors: factors.items };
+  } });
+  const technologies = catalogs.data?.technologies ?? [];
+  const factors = catalogs.data?.factors ?? [];
+  const resume = useQuery({ queryKey: ['scenario-resume', scenarioId], queryFn: () => loadSavedScenario(scenarioId!), enabled: scenarioId !== null, retry: false, refetchOnMount: 'always' });
+  useEffect(() => {
+    if (!scenarioId || hydrated || !resume.isFetchedAfterMount || !resume.isSuccess || resume.isFetching || !resume.data || !catalogs.isFetchedAfterMount || !catalogs.isSuccess || catalogs.isFetching || !catalogs.data || hydrationError) return;
+    try {
+      const { scenario, revision } = resume.data;
+      const restored = hydrateDraft(scenario, revision, catalogs.data.technologies, catalogs.data.factors);
+      const technology = catalogs.data.technologies.find(item => item.id === restored.technologyId)!;
+      const factor = catalogs.data.factors.find(item => item.id === restored.factorId)!;
+      saved.current = { scenarioId: scenario.id, name: scenario.name, kind: scenario.kind,
+        signature: JSON.stringify(buildParameters(restored, technology, factor)), revision };
+      setDraft(restored);
+      setHydrated(true);
+      setNotice(`Resumed saved revision ${revision.revision_no}.`);
+    } catch (error) { setHydrationError(errorMessage(error)); }
+  }, [scenarioId, hydrated, hydrationError, resume.isFetchedAfterMount, resume.isSuccess, resume.isFetching, resume.data, catalogs.isFetchedAfterMount, catalogs.isSuccess, catalogs.isFetching, catalogs.data]);
+  const technology = technologies.find(item => item.id === draft.technologyId);
+  const factor = factors.find(item => item.id === draft.factorId);
+  const onChange = (patch: Partial<Draft>) => { setDraft(current => ({ ...current, ...patch })); setNotice(''); };
+  const showErrors = (messages: string[]) => {
+    setErrors(messages);
+    requestAnimationFrame(() => { errorRef.current?.focus(); errorRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' }); });
   };
-
-  return (
-    <div className="flex flex-col gap-6">
-      {/* Page head */}
-      <div className="flex flex-col gap-2">
-        <nav aria-label="Breadcrumb" className="flex items-center gap-2 text-[12px] leading-4">
-          <Link to="/scenarios" className="text-pv-teal hover:underline">
-            Simulations
-          </Link>
-          <span className="text-pv-muted">/</span>
-          <span className="text-pv-muted">Pax Silica pilot</span>
-        </nav>
-        <div className="flex flex-wrap items-center gap-4">
-          <div className="flex flex-wrap items-center gap-3">
-            <h1 className="text-[28px] font-semibold leading-9 tracking-[-0.28px] text-pv-ink">
-              {step === 4 ? 'Review and run' : 'Set up simulation'}
-            </h1>
-            <span className="inline-flex h-6 items-center rounded-full bg-pv-chip px-2 text-[12px] font-medium leading-4 text-pv-muted">
-              Draft · revision 1
-            </span>
-            <span className="text-[12px] leading-4 text-pv-muted">
-              Autosaved {AUTOSAVED_AT[step - 1]}
-            </span>
-          </div>
-          <div className="ml-auto flex items-center gap-4">
-            <button type="button" onClick={() => navigate('/')} className={btnGhost}>
-              Cancel
-            </button>
-            <button type="button" className={btnSecondary}>
-              Save draft
-            </button>
-          </div>
-        </div>
+  const cacheSavedRevision = async (scenario: Scenario, revision: Revision) => {
+    const matchingQueries = { queryKey: ['scenario-resume'], predicate: (query: { queryKey: readonly unknown[] }) =>
+      typeof query.queryKey[1] === 'string' && query.queryKey[1].toLowerCase() === scenario.id.toLowerCase() };
+    // Discard older in-flight reads before publishing the revision just committed.
+    await queryClient.cancelQueries(matchingQueries);
+    const data = { scenario: { ...scenario, revision_no: revision.revision_no, revision_id: revision.id, latest_revision: revision }, revision };
+    queryClient.setQueriesData(matchingQueries, data);
+    queryClient.setQueryData(['scenario-resume', scenario.id], data);
+  };
+  const save = async (): Promise<Revision | undefined> => {
+    if (scenarioId !== null && (!hydrated || !saved.current)) throw new Error('Wait for the saved scenario to load before saving.');
+    if (scenarioId !== null) {
+      if (!catalogs.isFetchedAfterMount || !catalogs.isSuccess || catalogs.isFetching) throw new Error('Wait for the current technology and emission factor catalogs to finish loading before saving.');
+      // Revalidate the frozen versions even if a later catalog refresh occurred
+      // after hydration. Explicit selection of another valid version remains allowed.
+      const current = saved.current!;
+      hydrateDraft({ id: current.scenarioId, name: current.name, kind: current.kind }, current.revision, technologies, factors);
+    }
+    const issues = validateDraft(draft, technology, factor);
+    if (issues.length || !technology || !factor) { showErrors(issues); return; }
+    const parameters = buildParameters(draft, technology, factor);
+    const signature = JSON.stringify(parameters);
+    const name = draft.name.trim();
+    if (saved.current?.name === name && saved.current.kind === draft.kind) {
+      if (saved.current.signature === signature) return saved.current.revision;
+      const revision = await api.post<Revision>(`/scenarios/${saved.current.scenarioId}/revisions`, { parameters });
+      saved.current = { ...saved.current, signature, revision };
+      await cacheSavedRevision({ id: saved.current.scenarioId, name, kind: draft.kind }, revision);
+      return revision;
+    }
+    const scenario = await api.post<Scenario & { latest_revision: Revision }>('/scenarios', { name, kind: draft.kind, parameters });
+    saved.current = { scenarioId: scenario.id, name, kind: draft.kind, signature, revision: scenario.latest_revision };
+    await cacheSavedRevision(scenario, scenario.latest_revision);
+    return scenario.latest_revision;
+  };
+  const saveOrRun = async (launch: boolean) => {
+    if (operation.current) return;
+    if (launch && run && ['submitting', 'queued', 'running'].includes(run.phase)) { foregroundRun(); return; }
+    operation.current = true; setBusy(true); setErrors([]); setNotice('');
+    try {
+      const revision = await save();
+      if (!revision) return;
+      void queryClient.invalidateQueries({ queryKey: ['workspace'] });
+      setNotice(`Saved revision ${revision.revision_no}.`);
+      if (launch) {
+        dismissRun();
+        await submitRun(revision.id, draft.name.trim(), revision.revision_no);
+        void queryClient.invalidateQueries({ queryKey: ['workspace'] });
+        void queryClient.invalidateQueries({ queryKey: ['runs'] });
+      }
+    } catch (error) { showErrors([errorMessage(error)]); }
+    finally { operation.current = false; setBusy(false); }
+  };
+  if (scenarioId !== null && (resume.isError || catalogs.isError || hydrationError)) return <SectionCard>
+    <h1 className="text-2xl font-semibold">Saved scenario unavailable</h1>
+    <p role="alert" className="text-pv-err-ink">{hydrationError || errorMessage(resume.error ?? catalogs.error)}</p>
+    <div className="flex flex-wrap gap-3"><Link to="/" className={btnSecondary}>Choose a saved scenario</Link><Link to="/scenarios" className={btnPrimary}>Create scenario</Link>
+      <button type="button" className={btnSecondary} onClick={() => { setHydrationError(''); void resume.refetch(); void catalogs.refetch(); }}>Retry loading</button></div>
+  </SectionCard>;
+  if (scenarioId !== null && !hydrated) return <SectionCard><h1 className="text-2xl font-semibold">Resume saved scenario</h1><p role="status">Loading the scenario, latest revision, and versioned catalogs…</p></SectionCard>;
+  return <div className="flex flex-col gap-6 text-pv-ink">
+    <div className="flex flex-wrap items-center justify-between gap-4">
+      <div><nav aria-label="Breadcrumb" className="mb-2 text-xs text-pv-muted"><Link to="/">Workspace</Link> / Scenarios</nav>
+        <h1 className="text-[28px] font-semibold tracking-tight">{step === 4 ? 'Review and run' : 'Set up simulation'}</h1>
+        <p className="mt-1 text-sm text-pv-muted">Draft{saved.current ? ` · saved revision ${saved.current.revision.revision_no}` : ' · not yet saved'}</p>
       </div>
-
-      {/* Setup steps */}
-      <nav
-        aria-label="Setup steps"
-        className="rounded-xl border border-pv-divider bg-white px-6 pb-4 pt-6 shadow-pv-card"
-      >
-        <ol className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          {WIZARD_STEPS.map((item, index) => {
-            const number = index + 1;
-            const current = step === number;
-            const done = number < step;
-            return (
-              <li key={item.title}>
-                <button
-                  type="button"
-                  aria-current={current ? 'step' : undefined}
-                  onClick={() => setStep(number)}
-                  className="flex w-full items-center gap-3 text-left"
-                >
-                  <span
-                    className={clsx(
-                      'flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[14px] font-semibold leading-5',
-                      current && 'bg-pv-teal text-white',
-                      done && 'bg-pv-mint',
-                      !current && !done && 'border-2 border-pv-border-soft bg-white text-pv-muted',
-                    )}
-                  >
-                    {done ? (
-                      <Check size={18} className="text-pv-forest" aria-hidden="true" />
-                    ) : (
-                      number
-                    )}
-                  </span>
-                  <span className="flex min-w-0 flex-col">
-                    <span className="text-[12px] leading-4 text-pv-muted">
-                      {current
-                        ? `Step ${number} · current`
-                        : done
-                          ? `Step ${number} · done`
-                          : `Step ${number}`}
-                    </span>
-                    <span
-                      className={clsx(
-                        'text-[14px] leading-5 text-pv-ink',
-                        current ? 'font-semibold' : 'font-medium',
-                      )}
-                    >
-                      {item.title}
-                    </span>
-                  </span>
-                </button>
-              </li>
-            );
-          })}
-        </ol>
-      </nav>
-
-      {step === 1 ? (
-        <>
-        <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
-          {/* Main column */}
-          <div className="flex flex-col gap-6">
-            <SectionCard>
-              <div className="flex flex-col gap-1">
-                <h2 className="text-[18px] font-semibold leading-[26px] text-pv-ink">
-                  Scenario details
-                </h2>
-                <p className="text-[14px] leading-5 text-pv-muted">
-                  Name the scenario and choose what it&apos;s compared with.
-                </p>
-              </div>
-
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <label className="flex flex-col gap-2">
-                  <FieldLabel>Scenario name</FieldLabel>
-                  <input
-                    type="text"
-                    value={name}
-                    onChange={(event) => setName(event.target.value)}
-                    className="h-11 w-full rounded-lg border border-pv-input-border bg-white px-3 text-[14px] leading-5 text-pv-ink outline-none focus:border-pv-teal"
-                  />
-                </label>
-                <div className="flex flex-col gap-2">
-                  <FieldLabel>Compare against</FieldLabel>
-                  <SelectControl
-                    label="Compare against"
-                    value={compareId}
-                    onChange={setCompareId}
-                    options={COMPARE_OPTIONS}
-                  />
-                  <p className="text-[12px] leading-4 text-pv-muted">
-                    Comparisons need the same volume, period and grid factor.
-                  </p>
-                </div>
-              </div>
-
-              <fieldset className="flex flex-col gap-2">
-                <legend className="pb-2 text-[12px] font-medium leading-4 text-pv-ink">
-                  Scenario type
-                </legend>
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  {SCENARIO_TYPES.map((option) => {
-                    const selected = scenarioType === option.id;
-                    return (
-                      <label
-                        key={option.id}
-                        className={clsx(
-                          'flex cursor-pointer gap-3 rounded-xl p-4 transition-colors',
-                          selected
-                            ? 'border-2 border-pv-teal bg-pv-run-bg'
-                            : 'border border-pv-border-soft bg-white hover:border-pv-input-border',
-                        )}
-                      >
-                        <input
-                          type="radio"
-                          name="scenario-type"
-                          value={option.id}
-                          checked={selected}
-                          onChange={() => setScenarioType(option.id)}
-                          className="sr-only"
-                        />
-                        <RadioDot selected={selected} />
-                        <span className="flex min-w-0 flex-col gap-1">
-                          <span className="text-[14px] font-semibold leading-5 text-pv-ink">
-                            {option.title}
-                          </span>
-                          <span className="text-[14px] leading-5 text-pv-muted">{option.body}</span>
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
-              </fieldset>
-
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <div className="flex flex-col gap-2">
-                  <FieldLabel>Input dataset</FieldLabel>
-                  <SelectControl
-                    label="Input dataset"
-                    value={datasetId}
-                    onChange={setDatasetId}
-                    options={DATASET_OPTIONS}
-                  />
-                  <p className="flex flex-wrap items-center gap-2 text-[12px] leading-4 text-pv-muted">
-                    <Chip tone="mint">Sample data</Chip>
-                    5 daily records · volume, pump and mixing hours
-                  </p>
-                </div>
-                <label className="flex flex-col gap-2">
-                  <FieldLabel>Description (optional)</FieldLabel>
-                  <textarea
-                    value={description}
-                    onChange={(event) => setDescription(event.target.value)}
-                    className="h-[88px] w-full resize-none rounded-lg border border-pv-input-border bg-white p-3 text-[14px] leading-5 text-pv-ink outline-none focus:border-pv-teal"
-                  />
-                </label>
-              </div>
-            </SectionCard>
-
-            <SectionCard>
-              <div className="flex flex-col gap-1">
-                <h2 className="text-[18px] font-semibold leading-[26px] text-pv-ink">
-                  Treatment process
-                </h2>
-                <p className="text-[14px] leading-5 text-pv-muted">
-                  Choose the configuration the model uses. In this version, only pumping energy,
-                  mixing energy and coagulant use are modeled.
-                </p>
-              </div>
-
-              <fieldset className="flex flex-col gap-2">
-                <legend className="pb-2 text-[12px] font-medium leading-4 text-pv-ink">
-                  Treatment configuration
-                </legend>
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  {TREATMENTS.map((option) => {
-                    const selected = treatmentId === option.id;
-                    const Icon = option.icon;
-                    return (
-                      <label
-                        key={option.id}
-                        className={clsx(
-                          'flex cursor-pointer flex-col gap-3 rounded-xl p-5 transition-colors',
-                          selected
-                            ? 'border-2 border-pv-teal bg-pv-run-bg'
-                            : 'border border-pv-border-soft bg-white hover:border-pv-input-border',
-                        )}
-                      >
-                        <input
-                          type="radio"
-                          name="treatment-configuration"
-                          value={option.id}
-                          checked={selected}
-                          onChange={() => setTreatmentId(option.id)}
-                          className="sr-only"
-                        />
-                        <span className="flex items-center gap-3">
-                          <span
-                            className={clsx(
-                              'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg',
-                              selected ? 'bg-pv-mint' : 'bg-pv-chip',
-                            )}
-                          >
-                            <Icon
-                              size={20}
-                              className={selected ? 'text-pv-forest' : 'text-pv-ink'}
-                              aria-hidden="true"
-                            />
-                          </span>
-                          <span className="ml-auto">
-                            <RadioDot selected={selected} />
-                          </span>
-                        </span>
-                        <span className="text-[14px] font-semibold leading-5 text-pv-ink">
-                          {option.title}
-                        </span>
-                        <span className="text-[14px] leading-5 text-pv-muted">{option.body}</span>
-                        <span className="flex flex-wrap items-center gap-2">
-                          <span className="text-[12px] leading-4 text-pv-muted">{option.spec}</span>
-                          <Chip tone={option.chip.tone} icon={option.chip.tone === 'warn'}>
-                            {option.chip.label}
-                          </Chip>
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
-              </fieldset>
-
-              <div className="flex gap-3 rounded-xl border border-pv-warn-border bg-pv-warn-bg p-4">
-                <TriangleAlert
-                  size={20}
-                  className="mt-0.5 shrink-0 text-pv-amber"
-                  aria-hidden="true"
-                />
-                <div className="flex flex-col gap-1">
-                  <p className="text-[14px] font-semibold leading-5 text-pv-warn-ink">
-                    Specification v0.4 is unverified
-                  </p>
-                  <p className="text-[14px] leading-5 text-pv-ink">
-                    Its technical definition is waiting for a source review. You can run it, but
-                    results will be labeled &ldquo;unverified specification&rdquo; and shouldn&apos;t
-                    be read as expected plant performance.
-                  </p>
-                </div>
-              </div>
-
-              <div className="overflow-hidden rounded-xl border border-pv-divider">
-                <div className="border-b border-pv-divider px-4 py-3 text-[14px] font-semibold leading-5 text-pv-ink">
-                  Process units in this configuration
-                </div>
-                <table className="w-full table-fixed border-collapse text-left">
-                  <colgroup>
-                    <col className="w-[37%]" />
-                    <col className="w-[18%]" />
-                    <col className="w-[45%]" />
-                  </colgroup>
-                  <thead>
-                    <tr className="border-b border-pv-divider bg-pv-bg">
-                      <th className="px-4 py-3 text-[12px] font-medium leading-4 text-pv-muted">
-                        Unit
-                      </th>
-                      <th className="px-4 py-3 text-[12px] font-medium leading-4 text-pv-muted">
-                        In model v1
-                      </th>
-                      <th className="px-4 py-3 text-[12px] font-medium leading-4 text-pv-muted">
-                        What&apos;s estimated
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {PROCESS_UNITS.map((row) => (
-                      <tr key={row.unit} className="border-b border-pv-hairline last:border-b-0">
-                        <td className="px-4 py-3 text-[14px] font-medium leading-5 text-pv-ink">
-                          {row.unit}
-                        </td>
-                        <td className="px-4 py-3">
-                          <Chip tone={row.modeled ? 'ok' : 'neutral'}>
-                            {row.modeled ? 'Modeled' : 'Not modeled'}
-                          </Chip>
-                        </td>
-                        <td
-                          className={clsx(
-                            'px-4 py-3 text-[14px] leading-5',
-                            row.modeled ? 'text-pv-ink' : 'text-pv-muted',
-                          )}
-                        >
-                          {row.estimate}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </SectionCard>
-          </div>
-
-          {/* Right rail */}
-          <div className="flex flex-col gap-6">
-            <SectionCard>
-              <h2 className="text-[18px] font-semibold leading-[26px] text-pv-ink">
-                About this step
-              </h2>
-              <div className="flex flex-col gap-3">
-                <p className="text-[14px] leading-5 text-pv-ink">
-                  A scenario holds your assumptions. A run evaluates a frozen copy of them.
-                </p>
-                <p className="text-[14px] leading-5 text-pv-muted">
-                  Editing a scenario after a run creates a new revision, so earlier results never
-                  change.
-                </p>
-              </div>
-            </SectionCard>
-
-            <SectionCard>
-              <h2 className="text-[18px] font-semibold leading-[26px] text-pv-ink">
-                Evidence labels
-              </h2>
-              <p className="text-[14px] leading-5 text-pv-muted">
-                Every input carries one, and it travels into results and reports.
-              </p>
-              <dl className="flex flex-col gap-3">
-                {EVIDENCE_LABELS.map((item) => (
-                  <div key={item.label} className="flex flex-col gap-1">
-                    <dt>
-                      <Chip tone={item.tone}>{item.label}</Chip>
-                    </dt>
-                    <dd className="text-[12px] leading-4 text-pv-muted">{item.body}</dd>
-                  </div>
-                ))}
-              </dl>
-            </SectionCard>
-
-            <SectionCard>
-              <h2 className="text-[18px] font-semibold leading-[26px] text-pv-ink">
-                Setup checks
-              </h2>
-              <ul className="flex flex-col gap-3">
-                {SETUP_CHECKS.map((check) => (
-                  <li key={check.text} className="flex items-start gap-2">
-                    {check.ok ? (
-                      <CircleCheck
-                        size={18}
-                        className="mt-0.5 shrink-0 text-pv-ev-green"
-                        aria-hidden="true"
-                      />
-                    ) : (
-                      <TriangleAlert
-                        size={18}
-                        className="mt-0.5 shrink-0 text-pv-amber"
-                        aria-hidden="true"
-                      />
-                    )}
-                    <span className="text-[14px] leading-5 text-pv-ink">{check.text}</span>
-                  </li>
-                ))}
-              </ul>
-            </SectionCard>
-          </div>
-        </div>
-
-        {/* Action bar (step 1) */}
-        <div className="flex flex-wrap items-center gap-4 rounded-xl border border-pv-divider bg-white px-6 py-4 shadow-pv-card">
-          <button type="button" onClick={() => navigate('/')} className={btnGhost}>
-            Cancel
-          </button>
-          <div className="ml-auto flex flex-wrap items-center gap-4">
-            <button type="button" className={btnSecondary}>
-              Save draft
-            </button>
-            <button type="button" onClick={() => setStep(2)} className={btnPrimary}>
-              Continue to operating conditions
-              <ArrowRight size={18} aria-hidden="true" />
-            </button>
-          </div>
-        </div>
-        </>
-      ) : step === 2 ? (
-        <OperatingConditionsStep onBack={() => setStep(1)} onContinue={() => setStep(3)} />
-      ) : step === 3 ? (
-        <CostsEmissionStep onBack={() => setStep(2)} onContinue={() => setStep(4)} />
-      ) : (
-        <ReviewRunStep
-          onBack={() => setStep(3)}
-          onEdit={setStep}
-          onRun={run ? foregroundRun : submitRun}
-        />
-      )}
-
-      {!preview && run?.foreground && run.phase === 'running' && <RunProgressDialog />}
-      {!preview && run?.foreground && run.phase === 'succeeded' && (
-        <RunCompleteDialog
-          onClose={dismissRun}
-          onBackToDashboard={() => {
-            dismissRun();
-            navigate('/');
-          }}
-          onViewResults={() => {
-            dismissRun();
-            navigate('/results');
-          }}
-        />
-      )}
-      {!preview && run?.foreground && run.phase === 'failed' && (
-        <RunFailedDialog onClose={dismissRun} onEditInputs={dismissRun} onRetry={retryRun} />
-      )}
-
-      {preview === 'complete' && (
-        <RunCompleteDialog
-          onClose={clearPreview}
-          onBackToDashboard={() => {
-            clearPreview();
-            navigate('/');
-          }}
-          onViewResults={() => {
-            clearPreview();
-            navigate('/results');
-          }}
-        />
-      )}
-      {preview === 'failed' && (
-        <RunFailedDialog
-          onClose={clearPreview}
-          onEditInputs={clearPreview}
-          onRetry={() => {
-            clearPreview();
-            submitRun();
-          }}
-        />
-      )}
-
-      {import.meta.env.DEV && (
-        <DevStatePreview
-          options={[
-            { value: 'complete', label: 'Completed run' },
-            { value: 'failed', label: 'Failed run' },
-          ]}
-        />
-      )}
+      <button type="button" disabled={busy || catalogs.isPending} onClick={() => { void saveOrRun(false); }} className={btnSecondary + ' disabled:opacity-50'}>{busy ? 'Saving…' : 'Save draft'}</button>
     </div>
-  );
+    <nav aria-label="Setup steps" className="rounded-xl border border-pv-divider bg-white p-6 shadow-pv-card">
+      <ol className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">{steps.map((title, index) => <li key={title}>
+        <button type="button" onClick={() => setStep(index + 1)} aria-current={step === index + 1 ? 'step' : undefined} className="flex items-center gap-3 text-left">
+          <span className={`grid h-8 w-8 shrink-0 place-items-center rounded-full ${step === index + 1 ? 'bg-pv-teal text-white' : 'bg-pv-chip'}`}>{step > index + 1 ? <Check size={18} aria-hidden /> : index + 1}</span>
+          <span className="text-sm font-medium">{title}</span>
+        </button>
+      </li>)}</ol>
+    </nav>
+    {catalogs.isPending && <p role="status">Loading versioned technology and emission factor catalogs…</p>}
+    {catalogs.isError && <div role="alert" className="rounded-xl bg-pv-err-bg p-4 text-pv-err-ink">{errorMessage(catalogs.error)} <button className={btnSecondary} onClick={() => { void catalogs.refetch(); }}>Retry catalogs</button></div>}
+    {errors.length > 0 && <div ref={errorRef} tabIndex={-1} role="alert" className="rounded-xl border border-pv-err-border bg-pv-err-bg p-4 text-pv-err-ink">
+      <p className="font-semibold">Review these inputs</p><ul className="mt-2 list-disc pl-5">{errors.map(error => <li key={error}>{error}</li>)}</ul>
+    </div>}
+    {notice && <p role="status" className="rounded-xl bg-pv-ok-bg p-4">{notice}</p>}
+    {step === 1 ? <>
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <SectionCard>
+          <h2 className="text-[18px] font-semibold">Scenario and treatment process</h2>
+          <label className="flex flex-col gap-2 text-sm">Scenario name
+            <input required readOnly={scenarioId !== null} maxLength={200} value={draft.name} onChange={e => onChange({ name: e.target.value })} className="h-11 rounded-lg border border-pv-input-border px-3 focus:outline-pv-teal" />
+          </label>
+          <fieldset><legend className="mb-3 text-sm font-medium">Scenario type</legend>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">{(['baseline', 'intervention'] as const).map(kind => <label key={kind} className="flex items-start gap-3 rounded-xl border border-pv-divider p-4">
+              <input type="radio" name="scenario-kind" disabled={scenarioId !== null} checked={draft.kind === kind} onChange={() => onChange({ kind })} className="mt-1 accent-pv-teal" />
+              <span><span className="block font-medium capitalize">{kind}</span><span className="text-sm text-pv-muted">{kind === 'baseline' ? 'Reference operating assumptions.' : 'A proposed change to compare with a baseline.'}</span></span>
+            </label>)}</div>
+          </fieldset>
+          {scenarioId !== null && <p className="text-sm text-pv-muted">Name and type identify the saved scenario. Editing operating assumptions appends a revision to this scenario.</p>}
+          <label className="flex flex-col gap-2 text-sm">Treatment specification
+            <select value={draft.technologyId} onChange={e => onChange({ technologyId: e.target.value })} className="h-11 w-full rounded-lg border border-pv-input-border px-3 focus:outline-pv-teal">
+              <option value="">Select a versioned specification</option>
+              {technologies.map(item => <option value={item.id} key={item.id}>{item.name} · {item.version_id} · {item.evidence_status}</option>)}
+            </select>
+          </label>
+          {catalogs.isSuccess && !technologies.length && <p role="status">No technology specifications are available.</p>}
+          {technology && <div className="flex flex-col gap-3 rounded-xl bg-pv-bg p-4">
+            <Chip tone={technology.evidence_status === 'unverified' ? 'warn' : 'neutral'}>{technology.evidence_status}</Chip>
+            <p className="break-words text-sm">Version: {technology.version_id}<br />Source: {technology.source_ref}</p>
+          </div>}
+          <label className="flex flex-col gap-2 text-sm">Dataset version UUID (optional)
+            <input value={draft.datasetId} onChange={e => onChange({ datasetId: e.target.value })} placeholder="Leave empty for analyst-entered assumptions" className="h-11 min-w-0 rounded-lg border border-pv-input-border px-3 focus:outline-pv-teal" />
+          </label>
+        </SectionCard>
+        <SectionCard>
+          <h2 className="text-[18px] font-semibold">Evidence and model boundaries</h2>
+          <p className="text-sm">This is an offline plant model. It evaluates versioned assumptions over a defined service volume and period.</p>
+          <p className="rounded-xl bg-pv-warn-bg p-4 text-sm">Pax Silica is an unverified treatment specification. Its assumed performance must be reviewed against suitable technical evidence.</p>
+          <p className="text-sm text-pv-muted">Enter operating values within the selected specification’s ranges. Prefilled costs are editable assumptions, not measured observations. Linking a dataset does not automatically replace your entered values.</p>
+          <p className="text-sm text-pv-muted">Save draft stores a validated scenario revision on the server. A run separately freezes that revision for calculation.</p>
+        </SectionCard>
+      </div>
+      <div className="flex justify-end rounded-xl border border-pv-divider bg-white p-4"><button type="button" onClick={() => setStep(2)} className={btnPrimary}>Continue to operating conditions<ArrowRight size={18} aria-hidden /></button></div>
+    </> : step === 2 ? <OperatingConditionsStep draft={draft} onChange={onChange} technology={technology} onBack={() => setStep(1)} onContinue={() => setStep(3)} />
+      : step === 3 ? <CostsEmissionStep draft={draft} onChange={onChange} factors={factors} onBack={() => setStep(2)} onContinue={() => setStep(4)} />
+      : <ReviewRunStep draft={draft} technology={technology} factor={factor} busy={busy} onBack={() => setStep(3)} onEdit={setStep} onRun={() => { void saveOrRun(true); }} />}
+    {run?.foreground && ['submitting', 'queued', 'running'].includes(run.phase) && <RunProgressDialog />}
+    {run?.foreground && run.phase === 'succeeded' && <RunCompleteDialog onClose={dismissRun} onBackToDashboard={() => { dismissRun(); navigate('/'); }} onViewResults={() => { const id = run.id; dismissRun(); navigate(`/results?runId=${id}`); }} />}
+    {run?.foreground && ['failed', 'cancelled'].includes(run.phase) && <RunFailedDialog onClose={dismissRun} onEditInputs={() => { dismissRun(); setStep(2); }} onRetry={retryRun} />}
+  </div>;
 }

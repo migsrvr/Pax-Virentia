@@ -1,102 +1,90 @@
-import { useSyncExternalStore } from 'react';
+import { useEffect, useRef, useSyncExternalStore } from 'react';
+import { api } from './api';
+import { errorMessage } from './simulation';
+import type { Run } from './simulation';
 
-/* Run lifecycle store. The prototype has no calculation worker connected, so a
-   local executor advances the documented job lifecycle (queued → running →
-   succeeded). Dialog transitions are derived from this state; there are no
-   manual "show complete / show failed" triggers in the UI. */
-
-export type RunPhase = 'running' | 'succeeded' | 'failed';
-
+export type RunPhase = 'submitting' | Run['status'];
 export type RunState = {
-  id: string;
-  scenario: string;
-  revision: number;
-  attempt: number;
-  phase: RunPhase;
-  progress: number;
-  foreground: boolean;
+  id: string; scenario: string; revision: number; revisionId: string; attempt: number;
+  phase: RunPhase; foreground: boolean; error?: string; connectionError?: string; cancelRequested?: boolean;
 } | null;
-
-const TICK_MS = 100;
-const TOTAL_MS = 7000;
-const PROGRESS_PER_TICK = (100 * TICK_MS) / TOTAL_MS;
-
 let state: RunState = null;
-let timer: number | undefined;
+let timer: ReturnType<typeof setTimeout> | undefined;
+let generation = 0;
+let submissionKey = '';
 const listeners = new Set<() => void>();
-
-function emit(next: RunState): void {
-  state = next;
-  listeners.forEach((listener) => listener());
+function emit(next: RunState) { state = next; listeners.forEach(listener => listener()); }
+function subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; }
+export function useRunState(): RunState { return useSyncExternalStore(subscribe, () => state, () => state); }
+export function useRunDialogFocus() {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const root = ref.current;
+    const controls = () => Array.from(root?.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex="0"]') ?? []);
+    controls()[0]?.focus();
+    const trap = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab') return;
+      const items = controls(), first = items[0], last = items[items.length - 1];
+      if (!first) return;
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    root?.addEventListener('keydown', trap);
+    return () => { root?.removeEventListener('keydown', trap); if (previous?.isConnected) previous.focus(); };
+  }, []);
+  return ref;
 }
-
-function subscribe(listener: () => void): () => void {
-  listeners.add(listener);
-  return () => {
-    listeners.delete(listener);
-  };
+const terminal = (phase: RunPhase) => ['succeeded', 'failed', 'cancelled'].includes(phase);
+async function poll(runId: string, token: number): Promise<void> {
+  try {
+    const run = await api.get<Run>(`/runs/${encodeURIComponent(runId)}`);
+    if (token !== generation || !state) return;
+    emit({ ...state, phase: run.status, cancelRequested: run.cancel_requested,
+      error: run.error?.message, connectionError: undefined });
+  } catch (error) {
+    if (token !== generation || !state) return;
+    // A transport failure is not a failed scientific run. Check its durable state again.
+    emit({ ...state, connectionError: errorMessage(error) });
+  }
+  if (token === generation && state && !terminal(state.phase)) {
+    timer = setTimeout(() => { void poll(runId, token); }, 1500);
+  }
 }
-
-function getSnapshot(): RunState {
-  return state;
+export async function submitRun(revisionId: string, scenario: string, revision: number, attempt = 1, replayKey?: string): Promise<void> {
+  if (state && !terminal(state.phase) && !state.error) { foregroundRun(); return; }
+  clearTimeout(timer);
+  const token = ++generation;
+  submissionKey = replayKey ?? crypto.randomUUID();
+  emit({ id: '', scenario, revision, revisionId, attempt, phase: 'submitting', foreground: true });
+  try {
+    const accepted = await api.post<{ run_id: string; status: Run['status'] }>('/runs', {
+      scenario_revision_id: revisionId, requested_modules: ['energy', 'carbon', 'economics', 'ecology'],
+    }, { headers: { 'Idempotency-Key': submissionKey } });
+    if (token !== generation || !state) return;
+    emit({ ...state, id: accepted.run_id, phase: accepted.status });
+    if (!terminal(accepted.status)) void poll(accepted.run_id, token);
+  } catch (error) {
+    if (token === generation && state) emit({ ...state, phase: 'failed', error: errorMessage(error) });
+  }
 }
-
-export function useRunState(): RunState {
-  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
-}
-
-function startAttempt(attempt: number): void {
-  window.clearInterval(timer);
-  emit({
-    id: 'R-0142',
-    scenario: 'Pax Silica pilot',
-    revision: 1,
-    attempt,
-    phase: 'running',
-    progress: 0,
-    foreground: true,
-  });
-  timer = window.setInterval(() => {
-    if (!state || state.phase !== 'running') {
-      window.clearInterval(timer);
-      return;
-    }
-    const progress = Math.min(100, state.progress + PROGRESS_PER_TICK);
-    if (progress >= 100) {
-      window.clearInterval(timer);
-      emit({ ...state, progress: 100, phase: 'succeeded' });
-    } else {
-      emit({ ...state, progress });
-    }
-  }, TICK_MS);
-}
-
-export function submitRun(): void {
-  startAttempt(1);
-}
-
 export function retryRun(): void {
-  if (state) startAttempt(state.attempt + 1);
+  if (!state) return;
+  void submitRun(state.revisionId, state.scenario, state.revision, state.attempt + 1, state.id ? undefined : submissionKey);
 }
-
-/* "Run in background" and Escape: the run keeps advancing, the dialog hides. */
-export function backgroundRun(): void {
-  if (state) emit({ ...state, foreground: false });
+export function backgroundRun(): void { if (state) emit({ ...state, foreground: false }); }
+export function foregroundRun(): void { if (state) emit({ ...state, foreground: true }); }
+export async function cancelRun(): Promise<void> {
+  if (!state?.id || terminal(state.phase)) return;
+  const runId = state.id;
+  try {
+    const run = await api.post<Run>(`/runs/${encodeURIComponent(runId)}/cancel`);
+    if (state?.id === runId) emit({ ...state, phase: run.status, cancelRequested: run.cancel_requested, connectionError: undefined });
+  } catch (error) {
+    if (state?.id === runId) emit({ ...state, connectionError: errorMessage(error) });
+  }
 }
-
-/* Opening the run view again, e.g. pressing "Run simulation" while a run lives. */
-export function foregroundRun(): void {
-  if (state) emit({ ...state, foreground: true });
-}
-
-/* "Cancel run": the job stops and nothing is kept. */
-export function cancelRun(): void {
-  window.clearInterval(timer);
-  emit(null);
-}
-
-/* Closing a finished run's dialog ("Back to dashboard", "View results", "Edit inputs"). */
 export function dismissRun(): void {
-  window.clearInterval(timer);
-  emit(null);
+  if (state && !terminal(state.phase)) { backgroundRun(); return; }
+  clearTimeout(timer); generation++; emit(null);
 }

@@ -20,6 +20,7 @@ import PublicReportUnavailablePage from './pages/PublicReportUnavailablePage';
 import PublicReportsPage from './pages/PublicReportsPage';
 import PublicScenariosPage from './pages/PublicScenariosPage';
 import PublicSnapshotPage from './pages/PublicSnapshotPage';
+import PublishedReportPage from './pages/PublishedReportPage';
 import LoginPage from './pages/LoginPage';
 import NotFoundPage from './pages/NotFoundPage';
 import { AuthProvider, RequireAuth } from './services/auth';
@@ -41,6 +42,7 @@ export default function App() {
             <Route path="/public/reports" element={<PublicReportsPage />} />
             <Route path="/public/reports/scenario-analysis-jan-2026" element={<PublicReportDetailPage />} />
             <Route path="/public/reports/december-2025-snapshot-ps-003" element={<PublicReportUnavailablePage />} />
+            <Route path="/public/reports/:slug" element={<PublishedReportPage />} />
             <Route path="/public/home" element={<PublicLandingPage />} />
             <Route path="/public/:id" element={<PublicSnapshotPage />} />
             <Route path="/login" element={<LoginPage />} />

@@ -134,9 +134,13 @@ class SimulationRepository:
             f"CREATE TABLE IF NOT EXISTS jobs (id {id_type} PRIMARY KEY, run_id {id_type} NOT NULL UNIQUE REFERENCES simulation_runs(id), status TEXT NOT NULL CHECK(status IN ('queued','running','succeeded','failed','cancelled')), attempt_no INTEGER NOT NULL DEFAULT 0 CHECK(attempt_no>=0), available_at {timestamp} NOT NULL, lease_token TEXT, lease_until {timestamp}, cancel_requested INTEGER NOT NULL DEFAULT 0 CHECK(cancel_requested IN (0,1)), created_at {timestamp} NOT NULL)",
             f"CREATE TABLE IF NOT EXISTS idempotency_keys (user_id {id_type} NOT NULL, endpoint TEXT NOT NULL, key TEXT NOT NULL, request_hash TEXT NOT NULL, run_id {id_type} NOT NULL REFERENCES simulation_runs(id), PRIMARY KEY(user_id,endpoint,key))",
             f"CREATE TABLE IF NOT EXISTS dataset_versions (id {id_type} PRIMARY KEY, source_ref TEXT NOT NULL, evidence_status TEXT NOT NULL, content_hash TEXT NOT NULL, original_csv {binary} NOT NULL, quality_report {json_type} NOT NULL, schema_version TEXT NOT NULL, created_by {id_type} NOT NULL, created_at {timestamp} NOT NULL)",
+            f"CREATE TABLE IF NOT EXISTS publications (id {id_type} PRIMARY KEY, run_id {id_type} NOT NULL REFERENCES simulation_runs(id), slug TEXT UNIQUE NOT NULL, title TEXT NOT NULL, summary TEXT, snapshot_data {json_type} NOT NULL, published_by {id_type} NOT NULL REFERENCES users(id), published_at {timestamp} NOT NULL, view_count INTEGER NOT NULL DEFAULT 0)",
+            f"CREATE TABLE IF NOT EXISTS ai_explanations (id {id_type} PRIMARY KEY, run_id {id_type} NOT NULL REFERENCES simulation_runs(id), focus TEXT NOT NULL, narrative TEXT NOT NULL, key_drivers {json_type} NOT NULL, grounded_evidence {json_type} NOT NULL, generated_at {timestamp} NOT NULL, UNIQUE(run_id, focus))",
             "CREATE INDEX IF NOT EXISTS jobs_ready_idx ON jobs(status, available_at)",
             "CREATE INDEX IF NOT EXISTS runs_revision_idx ON simulation_runs(scenario_revision_id, created_at)",
             "CREATE UNIQUE INDEX IF NOT EXISTS users_email_idx ON users(email)",
+            "CREATE INDEX IF NOT EXISTS publications_slug_idx ON publications(slug)",
+            "CREATE INDEX IF NOT EXISTS ai_explanations_run_idx ON ai_explanations(run_id)",
         ]
         with self.transaction() as connection:
             for statement in statements:
@@ -382,3 +386,111 @@ class SimulationRepository:
             raise ServiceError(404, "dataset_not_found", "Dataset version was not found.")
         result["quality_report"] = decode(result["quality_report"])
         return result
+
+    def list_runs(self, limit=20, offset=0, scenario_revision_id=None):
+        with self.transaction() as c:
+            sql = ("SELECT r.*, s.name AS scenario_name, rev.revision_no, s.kind, j.cancel_requested "
+                   "FROM simulation_runs r "
+                   "JOIN scenario_revisions rev ON rev.id = r.scenario_revision_id "
+                   "JOIN scenarios s ON s.id = rev.scenario_id "
+                   "JOIN jobs j ON j.run_id = r.id ")
+            params = {"limit": limit, "offset": offset}
+            if scenario_revision_id:
+                sql += "WHERE r.scenario_revision_id = :rev_id "
+                params["rev_id"] = scenario_revision_id
+            sql += "ORDER BY r.created_at DESC LIMIT :limit OFFSET :offset"
+            items = c.all(sql, params)
+            for item in items:
+                item["frozen_inputs"] = decode(item["frozen_inputs"])
+                item["cancel_requested"] = bool(item["cancel_requested"])
+        return {"items": items, "limit": limit, "offset": offset}
+
+    def create_publication(self, run_id, slug, title, summary, snapshot_data, user_id):
+        pub_id = str(uuid4())
+        now = utc_now()
+        values = {
+            "id": pub_id,
+            "run_id": run_id,
+            "slug": slug,
+            "title": title,
+            "summary": summary,
+            "snapshot_data": canonical_json(snapshot_data),
+            "user": user_id,
+            "now": now,
+        }
+        with self.transaction() as c:
+            c.execute(
+                f"INSERT INTO publications(id, run_id, slug, title, summary, snapshot_data, published_by, published_at, view_count) "
+                f"VALUES(:id, :run_id, :slug, :title, :summary, {self.json_parameter('snapshot_data')}, :user, :now, 0)",
+                values,
+            )
+        return {
+            "id": pub_id,
+            "run_id": run_id,
+            "slug": slug,
+            "title": title,
+            "summary": summary,
+            "published_at": now,
+            "view_count": 0,
+        }
+
+    def get_publication_by_slug(self, slug, increment_view=True):
+        with self.transaction() as c:
+            pub = c.one(
+                "SELECT p.*, u.display_name AS published_by_name FROM publications p JOIN users u ON u.id = p.published_by WHERE p.slug = :slug",
+                {"slug": slug},
+            )
+            if pub is None:
+                raise ServiceError(404, "publication_not_found", "Publication was not found.")
+            if increment_view:
+                c.execute("UPDATE publications SET view_count = view_count + 1 WHERE slug = :slug", {"slug": slug})
+                pub["view_count"] += 1
+            pub["snapshot_data"] = decode(pub["snapshot_data"])
+            return pub
+
+    def list_publications(self, limit=20, offset=0):
+        with self.transaction() as c:
+            items = c.all(
+                "SELECT p.id, p.run_id, p.slug, p.title, p.summary, p.published_at, p.view_count, u.display_name AS published_by_name "
+                "FROM publications p JOIN users u ON u.id = p.published_by ORDER BY p.published_at DESC LIMIT :limit OFFSET :offset",
+                {"limit": limit, "offset": offset},
+            )
+        return {"items": items, "limit": limit, "offset": offset}
+
+    def save_ai_explanation(self, run_id, focus, narrative, key_drivers, grounded_evidence):
+        exp_id = str(uuid4())
+        now = utc_now()
+        values = {
+            "id": exp_id,
+            "run_id": run_id,
+            "focus": focus,
+            "narrative": narrative,
+            "key_drivers": canonical_json(key_drivers),
+            "grounded_evidence": canonical_json(grounded_evidence),
+            "now": now,
+        }
+        with self.transaction() as c:
+            c.execute(
+                f"INSERT INTO ai_explanations(id, run_id, focus, narrative, key_drivers, grounded_evidence, generated_at) "
+                f"VALUES(:id, :run_id, :focus, :narrative, {self.json_parameter('key_drivers')}, {self.json_parameter('grounded_evidence')}, :now) "
+                f"ON CONFLICT(run_id, focus) DO UPDATE SET narrative = excluded.narrative, "
+                f"key_drivers = excluded.key_drivers, grounded_evidence = excluded.grounded_evidence, generated_at = excluded.generated_at",
+                values,
+            )
+        return {
+            "id": exp_id,
+            "run_id": run_id,
+            "focus": focus,
+            "narrative": narrative,
+            "key_drivers": key_drivers,
+            "grounded_evidence": grounded_evidence,
+            "generated_at": now,
+        }
+
+    def get_ai_explanation(self, run_id, focus="general"):
+        with self.transaction() as c:
+            res = c.one("SELECT * FROM ai_explanations WHERE run_id = :run_id AND focus = :focus", {"run_id": run_id, "focus": focus})
+            if res:
+                res["key_drivers"] = decode(res["key_drivers"])
+                res["grounded_evidence"] = decode(res["grounded_evidence"])
+            return res

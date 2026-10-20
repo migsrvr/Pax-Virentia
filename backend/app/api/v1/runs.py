@@ -2,13 +2,20 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, Response
+from fastapi import APIRouter, Depends, Header, Query, Response
 
-from app.api.dependencies import get_service, require_analyst, require_session
+from app.api.dependencies import get_repository, get_service, require_analyst, require_session
 from app.api.schemas import SubmitRun
 
 
 router = APIRouter(prefix="/runs", tags=["Runs"])
+
+
+@router.get("", dependencies=[Depends(require_session)])
+def list_runs(limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0),
+              scenario_revision_id: UUID | None = None, repository=Depends(get_repository)):
+    return repository.list_runs(limit, offset,
+                                str(scenario_revision_id) if scenario_revision_id else None)
 
 
 @router.post("", status_code=202)

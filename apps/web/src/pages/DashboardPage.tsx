@@ -27,7 +27,6 @@ import { btnPrimary, btnSecondary } from './scenarios/shared';
 import DevStatePreview from '../components/dev/DevStatePreview';
 import {
   fetchDashboardWorkspace,
-  loadSampleWorkspace,
   type DashboardRun,
   type DashboardRunStatus,
 } from '../services/workspace';
@@ -106,9 +105,11 @@ const EVIDENCE = [
 
 const STATUS_STYLES: Record<DashboardRunStatus, { label: string; cls: string; icon: typeof Pencil }> = {
   draft: { label: 'Draft', cls: 'bg-pv-chip text-pv-muted', icon: Pencil },
-  running: { label: 'Running · 64%', cls: 'bg-pv-run-bg text-pv-run-ink', icon: LoaderCircle },
+  queued: { label: 'Queued', cls: 'bg-pv-chip text-pv-muted', icon: CircleDashed },
+  running: { label: 'Running', cls: 'bg-pv-run-bg text-pv-run-ink', icon: LoaderCircle },
   completed: { label: 'Completed', cls: 'bg-pv-ok-bg text-pv-ok-ink', icon: CircleCheck },
   failed: { label: 'Failed', cls: 'bg-pv-err-bg text-pv-err-ink', icon: CircleX },
+  cancelled: { label: 'Cancelled', cls: 'bg-pv-chip text-pv-muted', icon: CircleX },
 };
 
 const STATUS_CHIPS: { status: DashboardRunStatus; label: string; tone: string }[] = [
@@ -176,13 +177,13 @@ function StatChip({ label, tone }: { label: string; tone: string }) {
   return <span className={clsx('inline-flex h-6 items-center rounded-full px-2 text-xs font-medium', tone)}>{label}</span>;
 }
 
-function PopulatedDashboard({ runs }: { runs: DashboardRun[] }) {
+function PrototypeDashboard({ runs }: { runs: DashboardRun[] }) {
   const counts = runs.reduce(
     (acc, run) => {
       acc[run.status] += 1;
       return acc;
     },
-    { draft: 0, running: 0, completed: 0, failed: 0 } as Record<DashboardRunStatus, number>,
+    { draft: 0, queued: 0, running: 0, completed: 0, failed: 0, cancelled: 0 } as Record<DashboardRunStatus, number>,
   );
 
   return (
@@ -507,7 +508,7 @@ function PopulatedDashboard({ runs }: { runs: DashboardRun[] }) {
 }
 
 /* S02 · Dashboard — empty workspace (frame 37:2). */
-function EmptyWorkspace({ onLoadSamples }: { onLoadSamples: () => void }) {
+function EmptyWorkspace() {
   return (
     <div className="space-y-8">
       {/* Page head */}
@@ -515,7 +516,7 @@ function EmptyWorkspace({ onLoadSamples }: { onLoadSamples: () => void }) {
         <div className="min-w-0">
           <h1 className="text-[28px] font-semibold leading-9 tracking-[-0.28px] text-pv-ink">Dashboard</h1>
           <p className="mt-1 text-[14px] leading-5 text-pv-muted">
-            Sample Water District · representative plant · no simulations yet
+            Scenario workspace · no simulations yet
           </p>
         </div>
         <Link to="/scenarios" className={clsx(btnPrimary, 'shrink-0')}>
@@ -556,9 +557,7 @@ function EmptyWorkspace({ onLoadSamples }: { onLoadSamples: () => void }) {
           <Link to="/scenarios" className={btnPrimary}>
             New simulation
           </Link>
-          <button type="button" onClick={onLoadSamples} className={btnSecondary}>
-            Load sample scenarios
-          </button>
+          <Link to="/scenarios" className={btnSecondary}>Create scenario</Link>
         </div>
       </section>
 
@@ -597,7 +596,7 @@ function EmptyWorkspace({ onLoadSamples }: { onLoadSamples: () => void }) {
 const LOADING_METRICS = [
   { icon: Zap, title: 'Energy consumption', subtitle: 'Electricity · pumps and mixers' },
   { icon: Cloud, title: 'CO₂e emissions', subtitle: 'Electricity-associated only' },
-  { icon: Coins, title: 'Operating cost', subtitle: '5-day period · Philippine peso' },
+  { icon: Coins, title: 'Operating cost', subtitle: 'Modeled period · Philippine peso' },
   { icon: Sprout, title: 'Environmental indicator', subtitle: 'Downstream ecosystem stress' },
 ];
 
@@ -722,7 +721,7 @@ function WorkspaceError({ onRetry }: { onRetry: () => void }) {
       <div className="min-w-0">
         <h1 className="text-[28px] font-semibold leading-9 tracking-[-0.28px] text-pv-ink">Dashboard</h1>
         <p className="mt-1 text-sm leading-5 text-pv-muted">
-          Sample Water District · representative plant
+          Scenario workspace
         </p>
       </div>
       <section
@@ -749,11 +748,34 @@ function WorkspaceError({ onRetry }: { onRetry: () => void }) {
   );
 }
 
+function LiveDashboard({ runs }: { runs: DashboardRun[] }) {
+  return <div className="space-y-6">
+    <div className="flex flex-wrap items-center justify-between gap-4">
+      <div><h1 className="text-[28px] font-semibold text-pv-ink">Dashboard</h1>
+        <p className="mt-1 text-sm text-pv-muted">Saved scenarios and server-reported run activity.</p></div>
+      <Link to="/scenarios" className={btnPrimary}><Plus size={18} aria-hidden />Create scenario</Link>
+    </div>
+    <section aria-labelledby="live-workspace-title" className="overflow-hidden rounded-xl border border-pv-divider bg-white shadow-pv-card">
+      <div className="p-6"><h2 id="live-workspace-title" className="text-lg font-semibold">Scenarios and runs</h2>
+        <p className="mt-2 text-sm text-pv-muted">Open a completed run for its calculated metrics and evidence. Saved drafts have no calculated results.</p></div>
+      <div className="overflow-x-auto"><table className="w-full min-w-[660px] text-left text-sm">
+        <caption className="sr-only">Live saved drafts and run records</caption>
+        <thead className="bg-pv-bg"><tr>{['Scenario', 'Revision / run', 'Status', 'Updated', 'Action'].map(title => <th key={title} scope="col" className="px-6 py-3">{title}</th>)}</tr></thead>
+        <tbody>{runs.map((run, index) => <tr key={`${run.revRun}-${index}`} className="border-t border-pv-hairline">
+          <th scope="row" className="px-6 py-4 font-medium">{run.name}<span className="block text-xs font-normal text-pv-muted">{run.sub}</span></th>
+          <td className="max-w-xs break-words px-6 py-4">{run.revRun}</td><td className="px-6 py-4"><StatusChip status={run.status} />{run.failedNote && <p className="mt-1 text-xs">{run.failedNote}</p>}</td>
+          <td className="px-6 py-4">{run.updated}</td><td className="px-6 py-4">{run.action.to ? <Link to={run.action.to} className="font-semibold text-pv-teal hover:underline">{run.action.label}</Link> : <span className="text-pv-muted">{run.action.label}</span>}</td>
+        </tr>)}</tbody>
+      </table></div>
+    </section>
+  </div>;
+}
+
 export default function DashboardPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const preview = import.meta.env.DEV ? searchParams.get('preview') : null;
-  const workspace = useQuery({ queryKey: ['workspace', 'dashboard'], queryFn: fetchDashboardWorkspace });
+  const workspace = useQuery({ queryKey: ['workspace', 'dashboard'], queryFn: fetchDashboardWorkspace, refetchInterval: 15000 });
 
   const clearPreview = () => {
     if (preview === null) return;
@@ -765,11 +787,6 @@ export default function DashboardPage() {
   const reload = () => {
     clearPreview();
     void queryClient.invalidateQueries({ queryKey: ['workspace', 'dashboard'] });
-  };
-
-  const loadSamples = () => {
-    loadSampleWorkspace();
-    reload();
   };
 
   const runs = workspace.data?.runs ?? [];
@@ -784,9 +801,11 @@ export default function DashboardPage() {
       ) : showError ? (
         <WorkspaceError onRetry={reload} />
       ) : showEmpty ? (
-        <EmptyWorkspace onLoadSamples={loadSamples} />
+        <EmptyWorkspace />
+      ) : import.meta.env.DEV && preview === 'prototype' ? (
+        <><p role="status" className="rounded-xl bg-pv-warn-bg p-4">Design preview only: all metric and evidence values below are prototype examples.</p><PrototypeDashboard runs={runs} /></>
       ) : (
-        <PopulatedDashboard runs={runs} />
+        <LiveDashboard runs={runs} />
       )}
       {import.meta.env.DEV && (
         <DevStatePreview
