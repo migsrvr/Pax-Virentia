@@ -76,15 +76,43 @@ export default {
         'pv-warn-bg': '#FDF1E1',
         'pv-warn-border': '#F2C98A',
         'pv-warn-ink': '#9A4A06',
+        // Public portal — Figma "Pax Virentia — UI Design" tokens (pv-*)
+        'pv-page': '#F5F7F4',
+        'pv-brand': '#153F35',
+        'pv-action': '#167D79',
+        'pv-highlight': '#DDF3E7',
+        'pv-muted-bg': '#EEF1EF',
+        'pv-ink-light': '#5B6B65',
+        'pv-positive': '#1F6B43',
+        'pv-positive-bg': '#E7F3EC',
+        'pv-on-brand-soft': '#D5E3DC',
+        'pv-on-brand-muted': '#A9C9BC',
+        'pv-line': '#E3E8E5',
+        'pv-line-soft': '#EDF1EE',
+        'pv-line-strong': '#B7C2BD',
+        // chart accent from the Figma public-dashboard frame (P02)
+        'pv-analytics': '#8170B5',
+        // analytics chip tone from the Figma public-recommendations frame (P05)
+        'pv-analytics-ink': '#5E4F9A',
+        'pv-analytics-bg': '#EFEDF7',
+        // status tones from the Figma environmental-impacts frame (P03)
+        'pv-warning': '#9A4A06',
+        'pv-warning-bg': '#FDF1E1',
+        'pv-critical': '#B03A3A',
+        'pv-critical-bg': '#FBEAEA',
+        // full-screen scrim behind the download-confirmation dialog (P08)
+        'pv-overlay-scrim': 'rgba(15, 36, 30, 0.48)',
       },
       fontFamily: {
         heading: ['Inter', 'system-ui', 'sans-serif'],
         sans: ['Inter', 'system-ui', 'sans-serif'],
+        inter: ['Inter', 'system-ui', 'sans-serif'],
       },
       boxShadow: {
         subtle: '0 1px 3px rgba(36, 52, 61, 0.05)',
         'pv-card': '0 1px 2px rgba(21, 63, 53, 0.05)',
         'pv-dialog': '0 24px 48px rgba(15, 36, 30, 0.18)',
+        pv: '0 1px 1px rgba(21, 63, 53, 0.05)',
       },
     },
   },
