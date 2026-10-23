@@ -70,6 +70,19 @@ def validate_grounding(candidate, approved):
     return output
 
 
+def provider_schema(value):
+    """Copy a JSON schema, removing unsupported keys at every nesting level.
+
+    Only the provider's schema is relaxed; strict Pydantic and clause validation
+    still reject unknown fields locally before any explanation is persisted.
+    """
+    if isinstance(value, dict):
+        return {key: provider_schema(item) for key, item in value.items() if key != "additionalProperties"}
+    if isinstance(value, list):
+        return [provider_schema(item) for item in value]
+    return value
+
+
 def _provider_output(approved, api_key, model_id):
     from google import genai
     from google.genai import types
@@ -83,7 +96,7 @@ def _provider_output(approved, api_key, model_id):
                       + json.dumps(approved.model_dump(), ensure_ascii=False)),
             config=types.GenerateContentConfig(temperature=0,
                                                response_mime_type="application/json",
-                                               response_schema=ExplanationOutput),
+                                               response_schema=provider_schema(ExplanationOutput.model_json_schema())),
         )
         return json.loads(response.text)
 

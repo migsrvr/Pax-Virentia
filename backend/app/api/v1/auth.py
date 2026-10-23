@@ -2,22 +2,16 @@
 
 from fastapi import APIRouter, Depends, Request, Response
 
-from app.api.dependencies import SESSION_COOKIE, get_repository, require_session
+from app.api.dependencies import SESSION_COOKIE, get_repository, require_session, require_trusted_origin
 from app.api.schemas import LoginRequest
 from app.config import settings
 from app.services.auth import AuthService
-from app.services.errors import ServiceError
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
 def get_auth_service(repository=Depends(get_repository)):
     return AuthService(repository, settings.SESSION_LIFETIME_HOURS, settings.SESSION_REMEMBER_HOURS)
-
-
-def require_trusted_origin(request: Request):
-    if request.headers.get("Origin") not in request.app.state.allowed_origins:
-        raise ServiceError(403, "origin_rejected", "A trusted Origin is required.")
 
 
 @router.post("/login")

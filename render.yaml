@@ -1,0 +1,34 @@
+services:
+  - type: web
+    name: pax-virentia-api
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m app.bootstrap && uvicorn app.main:application --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3.5-flash
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ALLOWED_ORIGINS
+        value: '["http://localhost:5173", "https://*.vercel.app"]'
+      - key: ENABLE_EMBEDDED_WORKER
+        value: "true"
+      - key: SEED_USER_EMAIL
+        value: rivera.dev.miggy@gmail.com
+      - key: SEED_USER_PASSWORD
+        sync: false

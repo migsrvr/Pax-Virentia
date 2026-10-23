@@ -17,6 +17,8 @@ export class ApiError extends Error {
   }
 }
 
+const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || '/api/v1').replace(/\/+$/, '');
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   if (init.body !== undefined && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
@@ -26,7 +28,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const csrf = sessionStorage.getItem('pv-csrf');
     if (csrf) headers.set('X-CSRF-Token', csrf);
   }
-  const response = await fetch(`/api/v1${path}`, {
+  const response = await fetch(`${apiBaseUrl}${path}`, {
     credentials: 'include',
     ...init,
     headers,

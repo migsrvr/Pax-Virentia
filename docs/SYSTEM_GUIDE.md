@@ -1,9 +1,10 @@
 # Pax Virentia — System Guide
 
-**Version:** 1.0 · 20 October 2026  
-**Audience:** developers, analysts, reviewers, and the project planner  
-**Scope:** the end-to-end Pax Virentia platform: React 18 web application, FastAPI API, background
-simulation worker, Supabase PostgreSQL 17 persistence, and optional Gemini explanations.
+**Version:** 1.1 · 23 October 2026  
+**Audience:** developers, analysts, reviewers, operators, and the project planner  
+**Scope:** the end-to-end Pax Virentia platform: a React 18 web application on Vercel, a FastAPI API
+on Render with an embedded simulation worker, Supabase PostgreSQL 17 persistence, and optional
+Gemini explanations.
 
 This guide describes how the system is put together, how to configure it, how a calculation actually
 flows from a scenario to a stored result, and how to operate it responsibly. Scientific boundaries
@@ -22,18 +23,30 @@ assessment, or full life-cycle assessment.
 
 ```mermaid
 flowchart LR
-  subgraph Browser["apps/web — React 18 + TypeScript + Vite"]
-    UI["Pages & Components"]
-    CLIENT["api.ts / runLifecycle.ts\n(same-origin /api client)"]
-    UI --> CLIENT
+  subgraph Browser["Client browser"]
+    U["Analyst / public visitor"]
   end
 
-  CLIENT -->|"/api/v1 (Vite proxy in dev)"| API["backend/app — FastAPI\nmodular monolith"]
-  API -->|SQLAlchemy + psycopg| DB[("Supabase PostgreSQL 17\n(or local SQLite)")]
-  WORKER["backend/app/jobs — worker\nseparate process"] -->|claim lease / publish results| DB
-  WORKER --> CALC["Pure calculation modules\nenergy · carbon · economics · ecology gate"]
+  subgraph Vercel["Vercel — apps/web"]
+    SPA["React 18 + TypeScript + Vite\nPages, components, api.ts"]
+    RW["vercel.json\n/api/:path* rewrite"]
+  end
+
+  subgraph Render["Render — backend"]
+    API["FastAPI modular monolith\nuvicorn app.main:app"]
+    EW["Embedded RunWorker\nlifespan daemon thread"]
+    SEP["Optional separate worker\napp.jobs.worker"]
+  end
+
+  U -->|"HTTPS"| SPA
+  U -->|"/api/v1 (same origin)"| RW
+  RW -->|"HTTPS proxy"| API
+  API -->|"SQLAlchemy + psycopg"| DB[("Supabase PostgreSQL 17\n(or local SQLite in development)")]
+  EW -->|"claim lease / publish results"| DB
+  SEP -.->|"claim lease / publish results"| DB
+  EW --> CALC["Pure calculation modules\nenergy · carbon · economics · ecology gate"]
+  SEP -.-> CALC
   API -.->|"optional, server-side"| GEMINI["Google Gemini API"]
-  WORKER -.->|"explanations only"| GEMINI
 ```
 
 ### 1.1 Components
@@ -44,19 +57,42 @@ flowchart LR
 | API | `backend/app/main.py`, `backend/app/api/v1/` | Authentication, validation, scenario/revision persistence, run submission, status/results, comparisons, catalogs, datasets. |
 | Domain and services | `backend/app/domain/`, `backend/app/services/` | Scientific invariants, frozen snapshots, orchestration, error semantics. |
 | Calculations | `backend/app/calculations/` | Pure functions: energy, electricity-associated emissions, OPEX, ecological evidence gate. No database, network, or Gemini access. |
-| Worker | `backend/app/jobs/worker.py` | Claims durable jobs, renews leases, executes calculations, publishes results atomically. |
+| Worker | `backend/app/jobs/worker.py` | Claims durable jobs, renews leases, executes calculations, publishes results atomically. Runs as an embedded API thread in production or as a separate process. |
 | Persistence | `backend/app/repositories/simulation.py` | SQLAlchemy/psycopg PostgreSQL, explicit SQLite adapter for local tests. |
 | Catalogs | `backend/app/api/v1/catalogs.py` | DOE/IEA grid factors, technology specifications, model registry. |
-| Explanation service | planned (`backend/app/integrations/gemini.py`) | Grounded narrative over stored facts, with deterministic template fallback. |
+| Explanation service | `backend/app/integrations/gemini.py` | Grounded narrative over stored facts, with deterministic template fallback. |
+| Deployment | `docs/DEPLOYMENT_GUIDE.md` | Vercel frontend, Render backend, embedded/separate worker modes, environment reference, and smoke tests. |
 
 ### 1.2 Request topology
 
 - **Development:** Vite at `http://localhost:5173` proxies `/api` to FastAPI at
   `http://localhost:8000` (`apps/web/vite.config.ts`).
-- **Production:** the frontend is served with a same-origin `/api/:path*` rewrite to the API. The
-  rewrite is routing, not authorization; the API host enforces the same session, role, origin, and
-  CSRF checks.
+- **Production:** Vercel serves the static SPA. `apps/web/vercel.json` rewrites `/api/:path*` to the
+  Render service, so the browser treats every API call as same-origin under the Vercel hostname.
+  The remaining routes fall back to `/index.html` for React Router.
+- The rewrite is routing, not authorization; the Render API still enforces session, role, exact
+  origin, and CSRF checks. Vercel edge proxying does not make an untrusted origin trusted.
+- The backend health endpoint is **not** behind the `/api` rewrite; verify it directly on Render.
+  Use `/api/v1/openapi.json` through Vercel to verify the proxy path.
 - Every `/api/v1` response is `Cache-Control: private, no-store`.
+
+### 1.3 Production topology and worker modes
+
+| Area | Production choice |
+| --- | --- |
+| Frontend host | Vercel project with Root Directory `apps/web`, Vite build, `dist` output. |
+| Backend host | Render Web Service with Root Directory `backend` and `$PORT` binding. |
+| API entrypoint | `uvicorn app.main:app --host 0.0.0.0 --port $PORT` (or the equivalent `app.main:application` alias), after `python -m app.bootstrap`. |
+| Database | Supabase PostgreSQL 17. The Render start command runs idempotent bootstrap DDL on every deploy. |
+| Browser API path | Relative `/api/v1`, proxied by the Vercel rewrite. No production `VITE_*` API host. |
+| Default worker | Embedded `RunWorker` daemon thread in the FastAPI lifespan (`ENABLE_EMBEDDED_WORKER=true`). |
+| Alternative worker | `python -m app.jobs.worker` as a separate process, with the embedded worker disabled. |
+
+The two worker modes share the same durable `jobs` table, lease renewal, and lease-fenced
+publication. The embedded mode is the single-service, cost-effective default; it stops when a free
+Render instance sleeps and competes with the API for CPU. A separate worker is independently
+restartable and scalable, but requires a second paid service. See the
+[Production Deployment Guide](DEPLOYMENT_GUIDE.md) for the deployment sequence and trade-offs.
 
 ---
 
@@ -69,7 +105,9 @@ flowchart LR
   adapter. The repository refuses any backend other than PostgreSQL or an explicit `sqlite:///`
   URL.
 
-Schema creation is an explicit bootstrap step. **API startup never performs DDL.**
+Schema creation is an explicit bootstrap step. **API startup itself never performs DDL.** On Render
+the start command runs `python -m app.bootstrap` before uvicorn, so bootstrap DDL executes on every
+deploy; it is idempotent and must use a database path that permits DDL.
 
 ### 2.2 Tables
 
@@ -130,7 +168,8 @@ cp .env.example .env
 | `API_V1_STR` | `/api/v1` | Versioned API prefix. |
 | `CODE_VERSION` | `0.1.0-dev` | Frozen into every run and used in provenance. |
 | `DATABASE_URL` | `sqlite:///pax_virentia.db` | Supabase PostgreSQL or explicit SQLite URL. |
-| `ALLOWED_ORIGINS` | `["http://localhost:5173","http://localhost:5174","http://127.0.0.1:5173"]` | Exact origins accepted for CORS and CSRF checks. |
+| `ALLOWED_ORIGINS` | `["http://localhost:5173","http://localhost:5174","http://127.0.0.1:5173"]` | Browser origins accepted for CORS and the origin/CSRF checks. Accepts a JSON array or comma-separated list; exact origins are normalized without a path or trailing slash. Production must add the Vercel production origin and any approved preview origins. The only supported wildcard is `https://*.vercel.app`. |
+| `ENABLE_EMBEDDED_WORKER` | `true` in the production deployment | Starts the simulation worker as a daemon thread in the FastAPI lifespan. Set `false` when running a separate worker process. |
 | `SESSION_LIFETIME_HOURS` | `24` | Standard session lifetime. |
 | `SESSION_REMEMBER_HOURS` | `720` | Lifetime when "remember me" is selected. |
 | `SECRET_KEY` | development placeholder | Must be replaced in any shared deployment; minimum 16 characters. |
@@ -138,7 +177,7 @@ cp .env.example .env
 | `SUPABASE_ANON_KEY` | empty | Optional; never use in a Vite variable. |
 | `SUPABASE_SERVICE_ROLE_KEY` | empty | Server-side only; never expose to the browser. |
 | `GEMINI_API_KEY` | empty | Optional. Empty selects deterministic template explanations. |
-| `GEMINI_MODEL` | `gemini-2.5-flash` | Pinned explanation model identifier. |
+| `GEMINI_MODEL` | `gemini-3.5-flash` | Pinned explanation model identifier. Use a model available to the project; provider failure falls back to the deterministic template. |
 | `SEED_USER_EMAIL` | `rivera.dev.miggy@gmail.com` | Bootstrap seed analyst email. |
 | `SEED_USER_PASSWORD` | `pax-virentia-dev` | Bootstrap seed password; change outside local development. |
 | `SEED_USER_NAME` | `Miggy` | Bootstrap display name. |
@@ -148,13 +187,20 @@ cp .env.example .env
 
 Find them in the Supabase dashboard under **Project Settings → Database → Connection string → URI**.
 
-**Direct / session mode (port 5432)** — use for schema bootstrap and migrations:
+**Session mode, including the Supavisor session pooler (port 5432)** — recommended for this
+application because every Render start runs bootstrap DDL:
 
 ```env
+# Direct host (use when reachable from the host)
 DATABASE_URL="postgresql+psycopg://postgres:[PASSWORD]@db.[PROJECT-REF].supabase.co:5432/postgres?sslmode=require"
+
+# Session pooler (IPv4-friendly; recommended on Render)
+DATABASE_URL="postgresql+psycopg://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres?sslmode=require"
 ```
 
-**Transaction pooler / Supavisor (port 6543)** — suitable for production API/worker connections:
+**Transaction pooler / Supavisor (port 6543)** — assigns a server connection per transaction. It can
+work for some stateless workloads, but it does not preserve session state and restricts DDL and
+prepared statements. Do not assume it is interchangeable with 5432 for this deployment:
 
 ```env
 DATABASE_URL="postgresql+psycopg://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:6543/postgres?sslmode=require"
@@ -163,17 +209,25 @@ DATABASE_URL="postgresql+psycopg://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGI
 If the password contains `@`, `#`, `:`, `!`, or `%`, URL-encode it (`@` → `%40`, `#` → `%23`)
 before pasting.
 
-**Do not** point the schema bootstrap at the pooler if your plan restricts DDL through it. Bootstrap
-with the direct connection, then switch the runtime URL.
+**Bootstrap and runtime use the same URL on Render.** Because `python -m app.bootstrap` runs on
+every start, use session mode (5432). If DDL is restricted on the chosen port, bootstrap must be
+moved to a one-off 5432 step instead of pointing startup at 6543. The repository opens a pool of
+five connections per process (`pool_size=5, max_overflow=0`), so multiple Render instances multiply
+the connection count. See the
+[deployment troubleshooting](DEPLOYMENT_GUIDE.md#64-supabase-connection-pooler-port-5432-vs-6543).
 
 ### 3.4 Frontend configuration
 
 The web app calls the relative path `/api/v1`; no API base URL is embedded in the bundle. In
 development, `vite.config.ts` proxies `/api` to `http://localhost:8000` with `changeOrigin: true`.
 
-- Never put `GEMINI_API_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, or `SECRET_KEY` in a `VITE_*` variable.
-- Production uses a same-origin `/api/:path*` rewrite to the deployed API; do not introduce
-  cross-origin cookies casually.
+- Never put `GEMINI_API_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `DATABASE_URL`, or `SECRET_KEY` in a
+  `VITE_*` variable. Vite embeds every `VITE_*` value in the public bundle.
+- Production uses `apps/web/vercel.json` to rewrite `/api/:path*` to the Render service and all
+  other paths to `/index.html`. Do not set a production `VITE_API_BASE_URL` pointing directly at
+  Render; that reintroduces cross-origin cookies and third-party-cookie blocking.
+- The `__Host-pv_session` cookie therefore belongs to the Vercel hostname and is sent on same-site
+  API calls. `SameSite=Lax` is appropriate for this topology.
 
 ---
 
@@ -199,25 +253,37 @@ python3 -m app.bootstrap
 `python3 -m app.bootstrap` creates the schema if absent and provisions the configured seed analyst
 plus `ana.santos@example.com`. It is safe to re-run; existing IDs are preserved.
 
-Start the API:
+Choose the worker mode explicitly so local behavior matches production.
+
+**Embedded worker (single process):**
 
 ```bash
 cd "backend"
-uvicorn app.main:app --reload --port 8000
+ENABLE_EMBEDDED_WORKER=true uvicorn app.main:app --reload --port 8000
 ```
 
-- Health: `GET http://localhost:8000/health`
-- OpenAPI UI: `http://localhost:8000/api/v1/docs`
-- OpenAPI JSON: `http://localhost:8000/api/v1/openapi.json`
+The FastAPI lifespan starts the `RunWorker` daemon thread. This mirrors the default Render
+deployment.
 
-Start the worker in a **separate** process:
+**Separate worker (two processes):**
+
+```bash
+cd "backend"
+ENABLE_EMBEDDED_WORKER=false uvicorn app.main:app --reload --port 8000
+```
 
 ```bash
 cd "backend"
 PYTHONPATH=. python3 -m app.jobs.worker
 ```
 
-The worker is not started by the API process. Without it, submitted runs stay `queued`.
+- Health: `GET http://localhost:8000/health`
+- OpenAPI UI: `http://localhost:8000/api/v1/docs`
+- OpenAPI JSON: `http://localhost:8000/api/v1/openapi.json`
+
+With embedded mode disabled and no separate worker running, submitted runs stay `queued`. Do not run
+both modes against the same database unless you intend to have multiple workers; leases and fencing
+prevent duplicate publication, but the extra process is unnecessary for local development.
 
 ### 4.3 Frontend
 
@@ -234,8 +300,9 @@ Open `http://localhost:5173`. The dev proxy forwards `/api` to port 8000.
 | Task | Command |
 | --- | --- |
 | Bootstrap schema and seed users | `cd backend && python3 -m app.bootstrap` |
-| Run API | `cd backend && uvicorn app.main:app --reload --port 8000` |
-| Run worker | `cd backend && PYTHONPATH=. python3 -m app.jobs.worker` |
+| Run API with embedded worker | `cd backend && ENABLE_EMBEDDED_WORKER=true uvicorn app.main:app --reload --port 8000` |
+| Run API without worker | `cd backend && ENABLE_EMBEDDED_WORKER=false uvicorn app.main:app --reload --port 8000` |
+| Run separate worker | `cd backend && PYTHONPATH=. python3 -m app.jobs.worker` |
 | Backend tests | `PYTHONPATH=backend python3 -m unittest discover -s backend/tests -p "test_*.py" -v` |
 | Frontend type-check and build | `cd apps/web && npm run build` |
 | Frontend lint | `cd apps/web && npm run lint` |
@@ -251,7 +318,7 @@ sequenceDiagram
   participant UI as Browser
   participant API as FastAPI
   participant DB as Supabase PostgreSQL
-  participant W as Worker
+  participant W as Worker (embedded thread or separate process)
 
   UI->>API: POST /scenarios/{id}/revisions (parameters)
   API->>DB: validate + insert immutable revision
@@ -269,7 +336,9 @@ sequenceDiagram
    single transaction. Nothing is calculated inside the HTTP request.
 2. **Accept.** The API returns `202 Accepted` with `Location` and `Retry-After: 2`.
 3. **Claim.** The worker claims a ready job with a short transaction and a 60-second lease. PostgreSQL
-   uses `FOR UPDATE SKIP LOCKED`; SQLite uses `BEGIN IMMEDIATE`.
+   uses `FOR UPDATE SKIP LOCKED`; SQLite uses `BEGIN IMMEDIATE`. The worker may be the embedded
+   lifespan thread or a separate `app.jobs.worker` process; both use the same claim and fencing
+   logic.
 4. **Revalidate.** The worker rechecks the scientific invariants at the boundary, including the
    factor when carbon is requested. Client evidence flags cannot unlock ecological predictions.
 5. **Compute.** Pure functions produce energy, carbon, economics, and the ecological gate result.
@@ -363,8 +432,11 @@ Percent change is `null` when the baseline value is zero. Deltas are
 - Retrying a failed job creates a new attempt; historical results are never rewritten.
 - Leases are renewed every 20 seconds while work runs. If renewal fails, the attempt can no longer
   publish.
+- In embedded mode the worker runs inside the API process. If a free Render instance sleeps, queued
+  jobs wait until the service wakes and the lifespan starts a new worker. A separate worker avoids
+  that coupling.
 
-### 5.5 AI explanation pipeline (planned integration)
+### 5.5 AI explanation pipeline
 
 1. Queue or request an explanation only for a succeeded run.
 2. Send the minimum approved facts: metric keys, values, units, deltas, evidence labels,
@@ -396,7 +468,7 @@ claims of validated plant performance.
 | Jobs | Restart before/after publish; expired lease cannot publish; cancellation is honoured; idempotent replay returns the same run; conflicting payload returns `409`. |
 | API/security | Role matrix, CSRF, origin checks, session expiry/logout, upload limits, public/private separation, no direct calculation input from the browser. |
 | Frontend | TypeScript build passes; every metric shows units; missing metrics are visibly `not_estimable`; comparison rail remains keyboard-accessible. |
-| Deployment | Bootstrap against the intended database, proxy-cookie checks, publication withdrawal, and a restore exercise. |
+| Deployment | Bootstrap against the intended database; Render `/health`; Vercel same-origin proxy; login cookie and origin checks; embedded-worker run completion; public report access without a session; publication withdrawal; and a restore exercise. |
 
 ### 6.1 Test fixtures
 
@@ -466,10 +538,12 @@ They do not expose drafts, raw files, internal notes, or unpublished runs.
 
 | Symptom | Likely cause | Resolution |
 | --- | --- | --- |
-| Runs stay `queued` | Worker not running | Start `PYTHONPATH=. python3 -m app.jobs.worker`. |
-| `503`/connection error from API | Wrong `DATABASE_URL`, pooler vs direct mismatch, or Supabase paused | Verify the URI, password encoding, and project status; bootstrap with the direct connection. |
-| `401 authentication_required` | Missing/expired cookie, or cookie rejected over plain HTTP | Use `http://localhost` for development; production must be HTTPS. |
-| `403 csrf_rejected` | Missing `X-CSRF-Token` or untrusted `Origin` | Fetch the token from login/session and send the exact allowed origin. |
+| Runs stay `queued` | No worker: embedded worker disabled or not running, separate worker absent, or a free Render instance slept | Confirm `ENABLE_EMBEDDED_WORKER=true` and a live deploy, or start `PYTHONPATH=. python3 -m app.jobs.worker`. On a free instance, wake the service and allow the cold start. |
+| First request after idle is slow or times out | Render free-tier cold start | Retry once and check `/health`; use a paid always-on instance for production. See the [deployment guide](DEPLOYMENT_GUIDE.md#63-render-cold-starts-and-the-free-tier). |
+| `403 origin_rejected` on login | Vercel origin missing from `ALLOWED_ORIGINS` | Add the exact production or preview origin as a JSON array entry, then redeploy Render. No trailing slash. |
+| `503`/connection error from API | Wrong `DATABASE_URL`, pooler vs direct mismatch, or Supabase paused | Verify the URI, password encoding, and project status; bootstrap with a 5432 session connection. See [pooler guidance](DEPLOYMENT_GUIDE.md#64-supabase-connection-pooler-port-5432-vs-6543). |
+| `401 authentication_required` | Missing/expired cookie, third-party cookie blocking, or cookie rejected over plain HTTP | Keep browser calls same-origin through the Vercel proxy; production must be HTTPS. Do not add a `Domain` attribute to `__Host-pv_session`. |
+| `403 csrf_rejected` | Missing `X-CSRF-Token`, untrusted `Origin`, or lost sessionStorage | Fetch the token from login/session and send the exact allowed origin; reload and sign in again if sessionStorage was cleared. |
 | `403 insufficient_role` | Reviewer attempting an analyst mutation | Use an analyst/administrator account, or wait for the reviewer publication guard. |
 | `409 results_not_available` | Reading results before `succeeded` | Poll status; check worker logs for `calculation_failed`. |
 | `422 incompatible_comparison` | Volume, period, currency, region, boundary, or factor method differs | Re-create the intervention with matching assumptions. |
@@ -484,17 +558,16 @@ They do not expose drafts, raw files, internal notes, or unpublished runs.
 
 | Item | Current state | Owner / next step |
 | --- | --- | --- |
-| Explanation routes | Table and repository helpers exist; API routes are planned. Contract path (`/runs/{id}/explain`) differs from the master plan (`/explanations`). | Backend implementation; resolve naming first. |
-| Publication routes | `publications` table and helpers exist; routes are planned. Contract path differs from the master plan (`/publications`). | Backend implementation; resolve naming first. |
+| Explanation/publication naming | Routes are implemented as `/runs/{id}/explain` and `/runs/{id}/publish`; the master plan uses plural `/explanations` and `/publications`. | Keep the implemented paths until a versioned contract decision changes them. |
 | Withdrawal | No `status`/`withdrawn_at` column yet. | Schema change, then route. |
 | Reviewer publication | Current mutation guard allows analyst/administrator only. | Add a reviewer-capable guard. |
-| Run list | `list_runs()` exists; no `GET /runs` route. | Mount route. |
 | Catalog auth | `GET /catalogs/*` is currently unauthenticated. | Decide public vs private; add `require_session` if private. |
 | Treatment identity | Pax Silica remains unverified pending a technical source. | Researchers + adviser. |
 | Ecological model | No validated local exposure–response model or paired observations. | Domain adviser; otherwise formal scope revision. |
 | Energy ML | Deterministic baseline only; no training dataset or approved model artifact. | Research track with chronological splits and naive-baseline comparison. |
 | Factor data | Catalog serves 2024 factors; sample JSON is 2023. | Curate and version one authoritative factor set. |
-| Deployment plans | Supabase/Vercel/Railway choices must be confirmed against actual quotas and regions. | Technical lead. |
+| Deployment topology | Supabase + Render + Vercel is documented in `docs/DEPLOYMENT_GUIDE.md`; quotas, regions, and paid-tier needs must be confirmed for the actual project. Free Render cold starts pause the embedded worker. | Technical lead; confirm always-on capacity before promising run completion. |
+| Origin matching | Production supports exact origins plus the single wildcard `https://*.vercel.app`; project-scoped wildcard patterns are not supported. The global wildcard trusts every matching Vercel subdomain as a CSRF origin. | Prefer exact production and preview origins; use the wildcard only with documented risk. |
 
 ---
 
@@ -510,6 +583,10 @@ They do not expose drafts, raw files, internal notes, or unpublished runs.
 - **Not estimable:** the available evidence or model does not support a value; distinct from zero.
 - **Public snapshot:** a reviewed, redacted, intentionally published representation of selected
   results and limitations.
+- **Embedded worker:** the `RunWorker` running as a daemon thread inside the FastAPI lifespan,
+  enabled by `ENABLE_EMBEDDED_WORKER=true`. It stops when the API process stops.
+- **Separate worker:** the same `RunWorker` run as its own `app.jobs.worker` process, used when
+  independent restarts or run completion while the web service sleeps is required.
 
 See `CONTEXT.md` for the full domain glossary and `docs/API_CONTRACTS.md` for endpoint-level
 schemas, headers, status codes, and error formats.

@@ -73,9 +73,9 @@ class GroundingContracts(RepositoryFixture, unittest.TestCase):
         candidate = approved_output(results).model_dump()
         candidate["key_findings"].reverse()
         with patch("app.integrations.gemini._provider_output", return_value=candidate) as provider:
-            output = generate_explanation(results, api_key="test-key", model_id="gemini-3.8-flash")
-        self.assertEqual(provider.call_args.args[2], "gemini-3.8-flash")
-        self.assertEqual(Settings.model_fields["GEMINI_MODEL"].default, "gemini-3.8-flash")
+            output = generate_explanation(results, api_key="test-key", model_id="gemini-3.5-flash")
+        self.assertEqual(provider.call_args.args[2], "gemini-3.5-flash")
+        self.assertEqual(Settings.model_fields["GEMINI_MODEL"].default, "gemini-3.5-flash")
         self.assertEqual(output["grounded_evidence"]["source"], "gemini")
         self.assertIsNone(output["grounded_evidence"]["fallback_reason"])
 
