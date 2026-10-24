@@ -40,6 +40,7 @@ export default function App() {
           <Routes>
             {/* Public — no workspace chrome; every page reads reviewed publications only */}
             <Route path="/public" element={<Navigate to="/public/home" replace />} />
+            <Route path="/home" element={<PublicLandingPage />} />
             <Route path="/public/home" element={<PublicLandingPage />} />
             <Route path="/public/overview" element={<PublicDashboardPage />} />
             <Route path="/public/impacts" element={<PublicImpactsPage />} />
