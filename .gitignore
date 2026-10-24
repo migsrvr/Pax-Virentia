@@ -42,6 +42,7 @@ apps/web/dist-ssr
 .env.*
 !.env.example
 secrets.yaml
+docs/DEPLOYMENT_ENV.md
 
 # IDE & OS
 .vscode/
