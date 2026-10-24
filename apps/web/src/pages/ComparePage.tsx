@@ -3,7 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { ArrowRight } from 'lucide-react';
 import { api, ApiError } from '../services/api';
-import { errorMessage, format, label, listRuns } from '../services/simulation';
+import { errorMessage, formatDeltaPct, formatInteger, formatRate, label, listRuns } from '../services/simulation';
 import type { Comparison } from '../services/simulation';
 import { Chip, SectionCard, btnPrimary, btnSecondary } from './scenarios/shared';
 import StatusBadge from '../components/common/StatusBadge';
@@ -28,7 +28,11 @@ export default function ComparePage() {
   });
   const data = comparison.data;
   const error = comparison.error;
-  const signed = (value: number | null) => value === null ? '—' : `${value > 0 ? '+' : ''}${format(value, 4)}`;
+  const signed = (value: number | null) => value === null ? '—' : `${value > 0 ? '+' : value < 0 ? '−' : ''}${formatRate(Math.abs(value), 2)}`;
+  const carbonDelta = data?.deltas.find(delta => delta.key === 'carbon');
+  const emissionsAvoided = carbonDelta?.delta == null ? null : -carbonDelta.delta;
+  const netSavings = data?.net_savings_php ?? null;
+  const savingsLabel = netSavings == null ? '—' : `${netSavings < 0 ? '−' : ''}₱${formatInteger(Math.abs(netSavings))}`;
   return <div className="flex flex-col gap-6 text-pv-ink">
     <div className="flex flex-wrap items-center justify-between gap-4">
       <div><h1 className="text-[28px] font-semibold tracking-tight">Compare simulations</h1><p className="mt-1 text-sm text-pv-muted">Compare completed runs over compatible scientific boundaries.</p></div>
@@ -48,7 +52,7 @@ export default function ComparePage() {
       {(!baselines.length || !interventions.length) && <div role="status" className="flex flex-col items-start gap-3"><p>A completed baseline and intervention are needed. Queued, failed, or cancelled runs cannot be compared.</p><Link to="/scenarios" className={btnPrimary}>Set up a scenario</Link></div>}
     </SectionCard>}
     {baseline && intervention && <>
-      <section aria-label="Baseline versus intervention comparison" className="overflow-hidden rounded-xl border border-pv-divider bg-white shadow-pv-card">
+      <section aria-label="Baseline versus intervention comparison" className="overflow-hidden rounded-xl border border-pv-divider bg-white">
         <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_1fr]">
           {[baseline, intervention].map((run, index) => <div key={run.id} className={index ? 'bg-pv-forest p-6 text-white md:col-start-3' : 'bg-pv-ink p-6 text-white'}>
             <p className="text-xs uppercase tracking-wide">{index ? 'Intervention' : 'Baseline'}</p><h2 className="mt-2 text-lg font-semibold">{run.scenario_name ?? run.id}</h2>
@@ -65,24 +69,31 @@ export default function ComparePage() {
             <button type="button" className={btnSecondary + ' self-start'} onClick={() => { void comparison.refetch(); }}>Retry comparison</button>
           </div>}
           {data && <div className="flex flex-wrap items-center gap-3"><Chip tone={data.compatible ? 'ok' : 'warn'}>{data.compatible ? 'Compatible boundaries' : 'Incompatible boundaries'}</Chip>
-            <span className="text-sm">{format(data.volume_m3)} m³ · {data.period_start} – {data.period_end} · {data.currency}</span></div>}
+            <span className="text-sm">{formatInteger(data.volume_m3)} m³ · {data.period_start} – {data.period_end} · {data.currency}</span></div>}
         </div>
         {data?.compatible && <div className="overflow-x-auto"><table className="w-full min-w-[700px] text-left text-sm">
           <caption className="sr-only">Server-calculated comparison. Differences are intervention minus baseline.</caption>
           <thead className="bg-pv-bg"><tr>{['Metric', 'Baseline', 'Intervention', 'Change', 'Change (%)'].map(title => <th scope="col" key={title} className="px-4 py-3">{title}</th>)}</tr></thead>
           <tbody>{data.deltas.map(delta => <tr key={delta.key} className="border-t border-pv-hairline">
             <th scope="row" className="px-4 py-4 font-medium">{label(delta.key)}<span className="block text-xs font-normal text-pv-muted">{delta.unit}</span></th>
-            <td className="px-4 py-4 tabular-nums">{delta.baseline === null ? <StatusBadge status={delta.baseline_status} /> : format(delta.baseline, 4)}</td>
-            <td className="px-4 py-4 tabular-nums">{delta.intervention === null ? <StatusBadge status={delta.intervention_status} /> : format(delta.intervention, 4)}</td>
+            <td className="px-4 py-4 tabular-nums">{delta.baseline === null ? <StatusBadge status={delta.baseline_status} /> : formatRate(delta.baseline, 2)}</td>
+            <td className="px-4 py-4 tabular-nums">{delta.intervention === null ? <StatusBadge status={delta.intervention_status} /> : formatRate(delta.intervention, 2)}</td>
             <td className="px-4 py-4 tabular-nums">{delta.delta === null ? (delta.baseline_status === 'not_estimable' || delta.intervention_status === 'not_estimable' ? 'Not estimable' : 'Unavailable') : signed(delta.delta)}</td>
-            <td className="px-4 py-4 tabular-nums">{delta.delta_pct === null ? 'Not applicable' : `${signed(delta.delta_pct)}%`}</td>
+            <td className="px-4 py-4 tabular-nums">{delta.delta_pct === null ? 'Not applicable' : formatDeltaPct(delta.delta_pct)}</td>
           </tr>)}</tbody>
         </table></div>}
       </section>
       {data?.compatible && <>
-        <SectionCard><h2 className="text-lg font-semibold">Net operating savings</h2><p className="text-[28px] font-semibold tabular-nums">{format(data.net_savings_php)} <span className="text-base font-normal">PHP</span></p>
-          <p className="text-sm text-pv-muted">Baseline operating cost minus intervention operating cost for this period. Negative savings mean a cost increase.</p>
-        </SectionCard>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <SectionCard className="gap-2"><h2 className="text-sm text-pv-muted">Net cost savings</h2>
+            <p className="text-[28px] font-semibold tabular-nums">{savingsLabel} <span className="text-base font-normal">PHP</span></p>
+            <p className="text-xs text-pv-muted">Baseline operating cost minus intervention operating cost for this period. Negative values mean a cost increase.</p>
+          </SectionCard>
+          <SectionCard className="gap-2"><h2 className="text-sm text-pv-muted">Emissions avoided</h2>
+            <p className="text-[28px] font-semibold tabular-nums">{formatInteger(emissionsAvoided)} <span className="text-base font-normal">{carbonDelta?.unit ?? 'kg CO₂e'}</span></p>
+            <p className="text-xs text-pv-muted">Positive values mean lower electricity-associated emissions than the baseline.</p>
+          </SectionCard>
+        </div>
         <SectionCard><h2 className="text-lg font-semibold">How to read this comparison</h2>
           <p className="text-sm">Changes are intervention minus baseline. Percentages are not applicable when the baseline is zero. Each metric has its own boundary; a decrease does not establish overall sustainability.</p>
           <p className="text-sm">Electricity-associated emissions do not represent a complete facility footprint. Ecological stress remains not estimable when the evidence gate is unmet, distinct from zero impact.</p>

@@ -1,8 +1,10 @@
 import { Link } from 'react-router-dom';
 import PublicHeader from '../components/public/PublicHeader';
 import PublicFooter from '../components/public/PublicFooter';
-import { LoadState, MetricList } from '../components/public/PublicData';
-import { boundaryText, publishedOn, useLatestPublicReport } from '../components/public/publicPortal';
+import { LoadState } from '../components/public/PublicData';
+import { METRIC_LABELS, boundaryText, publishedOn, useLatestPublicReport } from '../components/public/publicPortal';
+import { formatInteger } from '../services/simulation';
+import type { PublicSnapshot } from '../services/publications';
 import logoStacked from '../assets/pv/logo-pax-virentia-stacked.png';
 import iconArrowRightLg from '../assets/pv/icon-arrow-right-lg.svg';
 import iconArrowRightSm from '../assets/pv/icon-arrow-right-sm.svg';
@@ -70,7 +72,7 @@ const HOW_IT_WORKS = [
 ];
 
 const PORTAL_IS = [
-  'Simulated estimates from a model and sample data',
+  'Simulated estimates from an offline model',
   'Published only after an internal review',
   'Open about every assumption and limitation',
 ];
@@ -94,7 +96,7 @@ function SectionHeading({ title, subtitle }: { title: string; subtitle?: string 
 
 function ExploreCard({ card }: { card: (typeof EXPLORE_CARDS)[number] }) {
   const className =
-    'flex flex-col gap-3 rounded-xl border border-pv-line bg-white p-6 shadow-pv transition-colors hover:border-pv-line-strong';
+    'flex flex-col gap-3 rounded-xl border border-pv-line bg-white p-6 transition-colors hover:border-pv-line-strong';
   const content = (
     <>
       <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-pv-highlight">
@@ -125,7 +127,7 @@ function PortalListCard({
   items: string[];
 }) {
   return (
-    <div className="flex flex-col gap-4 rounded-xl border border-pv-line bg-white p-6 shadow-pv">
+    <div className="flex flex-col gap-4 rounded-xl border border-pv-line bg-white p-6">
       <h3 className="text-[18px] font-semibold leading-[26px] text-pv-ink">{title}</h3>
       <ul className="flex flex-col gap-3">
         {items.map((item) => (
@@ -139,11 +141,41 @@ function PortalListCard({
   );
 }
 
+function LandingMetricList({ snapshot }: { snapshot: PublicSnapshot }) {
+  return (
+    <ul>
+      {snapshot.metrics.map((metric) => {
+        const value =
+          metric.status === 'not_estimable'
+            ? 'Not estimable'
+            : metric.value === null || metric.value === undefined
+              ? 'Not available'
+              : `${formatInteger(metric.value)} ${(metric.unit ?? '').replace('CO2', 'CO₂')}`.trim();
+        return (
+          <li key={metric.key} className="flex items-start justify-between gap-6 border-b border-pv-line-soft py-3 last:border-b-0">
+            <div>
+              <p className="text-[14px] font-medium leading-5 text-pv-ink">{METRIC_LABELS[metric.key] ?? metric.key}</p>
+              {metric.status === 'not_estimable' ? (
+                <p className="mt-1.5 max-w-[320px] text-[12px] leading-4 text-pv-ink-light">
+                  The evidence does not support an estimate. This is not the same as zero impact.
+                </p>
+              ) : null}
+            </div>
+            <p className={metric.status === 'not_estimable' ? 'text-[14px] font-semibold leading-5 text-pv-ink' : 'text-[18px] font-semibold leading-[26px] text-pv-ink tabular-nums'}>
+              {value}
+            </p>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 function SnapshotCard() {
   const latest = useLatestPublicReport();
   const report = latest.data;
   return (
-    <div className="w-full shrink-0 rounded-xl border border-pv-line bg-white p-6 shadow-pv lg:w-[520px]">
+    <div className="w-full shrink-0 rounded-xl border border-pv-line bg-white p-6 lg:w-[520px]">
       <div className="flex items-start justify-between gap-4">
         <div className="flex flex-col gap-1">
           <h2 className="text-[18px] font-semibold leading-[26px] text-pv-ink">
@@ -162,7 +194,7 @@ function SnapshotCard() {
       <LoadState query={latest}>
         {report?.snapshot_data ? (
           <>
-            <div className="mt-2"><MetricList snapshot={report.snapshot_data} /></div>
+            <div className="mt-2"><LandingMetricList snapshot={report.snapshot_data} /></div>
             <Link
               to={`/public/reports/${report.slug}`}
               className="mt-2 inline-flex min-h-[44px] items-center gap-1 text-[14px] font-semibold leading-5 text-pv-action transition-colors hover:underline"
@@ -222,7 +254,7 @@ export default function PublicLandingPage() {
                 </Link>
                 <Link
                   to="/"
-                  className="inline-flex h-11 items-center gap-2 rounded-lg border border-pv-on-brand-muted px-4 text-[14px] font-semibold leading-5 text-white transition-colors hover:bg-white/10"
+                  className="inline-flex h-11 items-center gap-2 rounded-lg border border-pv-on-brand-muted px-4 text-[14px] font-semibold leading-5 text-white transition-colors hover:bg-pv-pine"
                 >
                   <img src={iconUtilitySigninHero} alt="" className="h-[18px] w-[18px]" />
                   Utility sign in
@@ -254,7 +286,7 @@ export default function PublicLandingPage() {
             {HOW_IT_WORKS.map((step) => (
               <div
                 key={step.step}
-                className="flex flex-col gap-3 rounded-xl border border-pv-line bg-white p-6 shadow-pv"
+                className="flex flex-col gap-3 rounded-xl border border-pv-line bg-white p-6"
               >
                 <span className="flex h-8 w-8 items-center justify-center rounded-2xl bg-pv-brand text-[14px] font-semibold leading-5 text-white">
                   {step.step}
@@ -293,7 +325,7 @@ export default function PublicLandingPage() {
             <div className="flex flex-wrap gap-4">
               <Link
                 to="/"
-                className="inline-flex h-11 items-center rounded-lg bg-pv-action px-4 text-[14px] font-semibold leading-5 text-white transition-opacity hover:opacity-90"
+                className="inline-flex h-11 items-center rounded-lg bg-pv-action px-4 text-[14px] font-semibold leading-5 text-white transition-colors hover:bg-pv-teal-hover"
               >
                 Utility sign in
               </Link>

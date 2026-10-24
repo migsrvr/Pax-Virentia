@@ -1,4 +1,4 @@
-import { CircleHelp, FlaskConical, LogOut, Search } from 'lucide-react';
+import { CircleHelp, LogOut, Search } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
@@ -63,9 +63,9 @@ export default function Header() {
           />
         </form>
         <div className="ml-auto flex shrink-0 items-center gap-2 sm:gap-4">
-          <span className="hidden h-6 items-center gap-1 rounded-full bg-pv-info-bg px-2 text-xs font-medium text-pv-info md:inline-flex">
-            <FlaskConical size={14} aria-hidden="true" />
-            Simulated estimates · Sample data
+          <span className="hidden h-6 items-center gap-2 rounded-full bg-pv-mint px-2 text-xs font-medium text-pv-forest md:inline-flex">
+            <span className="h-1.5 w-1.5 rounded-full bg-pv-teal" aria-hidden="true" />
+            Pax Virentia Engine · Active
           </span>
           <Link
             to="/methodology"

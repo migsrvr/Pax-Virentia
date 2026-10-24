@@ -6,7 +6,7 @@ import { CircleCheck, CircleSlash } from 'lucide-react';
 import { api, ApiError } from '../services/api';
 import { useAuth } from '../services/auth';
 import { canAnalyze } from '../services/roles';
-import { errorMessage, format, label, listRuns } from '../services/simulation';
+import { errorMessage, formatDeltaPct, formatInteger, formatRate, label, listRuns } from '../services/simulation';
 import type { Comparison, Run } from '../services/simulation';
 import { changedInputs, sameBoundary } from '../services/insights';
 import { Chip, btnPrimary, btnSecondary } from './scenarios/shared';
@@ -41,8 +41,8 @@ function describe(delta: Comparison['deltas'][number]): string {
   }
   if (delta.delta === 0) return 'No modeled change';
   const direction = delta.delta < 0 ? 'lower' : 'higher';
-  const pct = delta.delta_pct === null ? '' : ` · ${format(Math.abs(delta.delta_pct), 2)}% ${direction}`;
-  return `${delta.delta > 0 ? '+' : '−'}${format(Math.abs(delta.delta), 2)} ${delta.unit ?? ''}${pct}`.replace(/\s+·/, ' ·');
+  const pct = delta.delta_pct === null ? '' : ` · ${formatDeltaPct(delta.delta_pct)} ${direction}`;
+  return `${delta.delta > 0 ? '+' : '−'}${formatRate(Math.abs(delta.delta), 2)} ${delta.unit ?? ''}${pct}`.replace(/\s+·/, ' ·');
 }
 
 function InsightCard({ pair, comparison, review, onReview, canMark, saving }: {
@@ -53,8 +53,10 @@ function InsightCard({ pair, comparison, review, onReview, canMark, saving }: {
     ? changedInputs(pair.baseline.frozen_inputs.parameters, pair.intervention.frozen_inputs.parameters) : [];
   const data = comparison.data;
   const unverified = pair.intervention.frozen_inputs?.parameters.technology.evidence_status !== 'verified';
+  const energyDelta = data?.deltas.find((delta) => delta.key === 'energy');
+  const carbonDelta = data?.deltas.find((delta) => delta.key === 'carbon');
   return (
-    <article className={clsx('flex flex-col gap-4 rounded-xl border bg-white p-6 shadow-pv-card', review?.status === 'dismissed' ? 'border-pv-divider opacity-70' : 'border-pv-divider')}>
+    <article className={clsx('flex flex-col gap-4 rounded-xl border p-6', review?.status === 'dismissed' ? 'border-pv-divider bg-pv-bg' : 'border-pv-divider bg-white')}>
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex min-w-0 flex-col gap-1">
           <h3 className="text-[16px] font-semibold text-pv-ink">{runName(pair.intervention)} vs {runName(pair.baseline)}</h3>
@@ -65,6 +67,26 @@ function InsightCard({ pair, comparison, review, onReview, canMark, saving }: {
           {review ? <Chip tone={review.status === 'reviewed' ? 'ok' : 'neutral'}>{review.status === 'reviewed' ? 'Reviewed' : 'Dismissed'}</Chip> : null}
         </div>
       </header>
+
+      {data ? (
+        <div className="flex flex-wrap gap-2">
+          {data.net_savings_php !== null ? (
+            <Chip tone={data.net_savings_php >= 0 ? 'ok' : 'warn'}>
+              {data.net_savings_php < 0 ? 'Cost increase' : 'Net savings'} ₱{formatInteger(Math.abs(data.net_savings_php))}
+            </Chip>
+          ) : null}
+          {energyDelta?.delta != null ? (
+            <Chip tone={energyDelta.delta <= 0 ? 'ok' : 'warn'}>
+              {formatInteger(Math.abs(energyDelta.delta))} kWh {energyDelta.delta <= 0 ? 'lower' : 'higher'}
+            </Chip>
+          ) : null}
+          {carbonDelta?.delta != null ? (
+            <Chip tone={carbonDelta.delta <= 0 ? 'ok' : 'warn'}>
+              {formatInteger(Math.abs(carbonDelta.delta))} {carbonDelta.unit ?? 'kg CO₂e'} {carbonDelta.delta <= 0 ? 'avoided' : 'added'}
+            </Chip>
+          ) : null}
+        </div>
+      ) : null}
 
       {comparison.isPending ? <p role="status" className="text-[14px]">Calculating differences on the server…</p> : null}
       {!canMark ? <p className="text-[14px] text-pv-muted">Calculated differences are available to analysts; open the runs to review their results.</p> : null}
@@ -90,7 +112,7 @@ function InsightCard({ pair, comparison, review, onReview, canMark, saving }: {
           </dl>
           {data.net_savings_php !== null ? (
             <p className="text-[14px] text-pv-ink">
-              Net operating savings for this period: <span className="font-semibold tabular-nums">{format(data.net_savings_php)} PHP</span>
+              Net operating savings for this period: <span className="font-semibold tabular-nums">{data.net_savings_php < 0 ? '−' : ''}₱{formatInteger(Math.abs(data.net_savings_php))}</span>
               {data.net_savings_php < 0 ? ' (a cost increase)' : ''}.
             </p>
           ) : null}
@@ -100,12 +122,16 @@ function InsightCard({ pair, comparison, review, onReview, canMark, saving }: {
       <div className="flex flex-col gap-2">
         <h4 className="text-[14px] font-semibold text-pv-ink">What differs between the runs</h4>
         {changes.length ? (
-          <ul className="flex flex-col gap-1 text-[12px] text-pv-ink">
-            {changes.slice(0, 12).map((change) => (
-              <li key={change.field} className="break-words"><span className="text-pv-muted">{change.field}:</span> {change.before} → {change.after}</li>
-            ))}
-            {changes.length > 12 ? <li className="text-pv-muted">…and {changes.length - 12} more inputs</li> : null}
-          </ul>
+          <details className="text-[12px] text-pv-ink">
+            <summary className="cursor-pointer font-medium text-pv-teal">
+              {changes.length} input{changes.length === 1 ? '' : 's'} changed
+            </summary>
+            <ul className="mt-2 flex flex-col gap-1">
+              {changes.map((change) => (
+                <li key={change.field} className="break-words"><span className="text-pv-muted">{change.field}:</span> {change.before} → {change.after}</li>
+              ))}
+            </ul>
+          </details>
         ) : <p className="text-[12px] text-pv-muted">The frozen inputs are identical.</p>}
       </div>
 
@@ -220,7 +246,7 @@ export default function RecommendationsPage() {
           {runs.isError ? <p role="alert" className="text-pv-err-ink">{errorMessage(runs.error)}</p> : null}
           {reviews.isError ? <p role="alert" className="text-pv-err-ink">Review marks could not be loaded. {errorMessage(reviews.error)}</p> : null}
           {runs.isSuccess && !pairs.length ? (
-            <section className="flex flex-col items-start gap-3 rounded-xl border border-pv-divider bg-white p-6 shadow-pv-card">
+            <section className="flex flex-col items-start gap-3 rounded-xl border border-pv-divider bg-white p-6">
               <h2 className={H2}>No comparable runs yet</h2>
               <p className="text-[14px] text-pv-muted">
                 Insights need a completed baseline run and a completed intervention run with the same volume, period,
@@ -240,7 +266,7 @@ export default function RecommendationsPage() {
         </div>
 
         <aside className="flex flex-col gap-6">
-          <section className="flex flex-col gap-3 rounded-xl border border-pv-divider bg-white p-6 shadow-pv-card">
+          <section className="flex flex-col gap-3 rounded-xl border border-pv-divider bg-white p-6">
             <h2 className={H2}>How these are generated</h2>
             <p className="text-[14px] leading-5 text-pv-ink">
               Each insight pairs a stored intervention run with a stored baseline over the same boundary. The server
@@ -251,7 +277,7 @@ export default function RecommendationsPage() {
               {NOT_CONSIDERED.map((item) => <li key={item}>{item}</li>)}
             </ul>
           </section>
-          <section className="flex flex-col gap-3 rounded-xl border border-pv-divider bg-white p-6 shadow-pv-card">
+          <section className="flex flex-col gap-3 rounded-xl border border-pv-divider bg-white p-6">
             <h2 className={H2}>Review status</h2>
             <div className="flex items-center justify-between gap-4 text-[14px] leading-5">
               <span className="text-pv-ink">{reviewedCount} of {pairs.length} reviewed</span>

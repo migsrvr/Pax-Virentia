@@ -50,7 +50,7 @@ export function SectionCard({
   return (
     <section
       className={clsx(
-        'flex flex-col rounded-xl border border-pv-divider bg-white p-6 shadow-pv-card',
+        'flex flex-col rounded-xl border border-pv-divider bg-white p-6',
         className ?? 'gap-6',
       )}
     >

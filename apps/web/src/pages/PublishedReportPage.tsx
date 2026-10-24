@@ -10,7 +10,7 @@ import StatusBadge from '../components/common/StatusBadge';
 import PublicReportUnavailablePage from './PublicReportUnavailablePage';
 import { getPublicReport, publicDownloadPath } from '../services/publications';
 import type { PublicSnapshot } from '../services/publications';
-import { format, label } from '../services/simulation';
+import { formatInteger, formatRate, label } from '../services/simulation';
 
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -35,7 +35,7 @@ function PublicFields({ fields }: { fields: Record<string, PublicValue> }) {
         <div key={key} className="grid grid-cols-1 gap-2 py-3 sm:grid-cols-2">
           <dt className="text-[14px] text-pv-ink-light">{fieldLabels[key] ?? key.replace(/_/g, ' ')}</dt>
           <dd className="break-words text-[14px]">
-            {value === null || value === undefined ? 'Not supplied' : Array.isArray(value) ? value.join(', ') : typeof value === 'number' ? format(value, 4) : String(value)}
+            {value === null || value === undefined ? 'Not supplied' : Array.isArray(value) ? value.join(', ') : typeof value === 'number' ? formatRate(value, 2) : String(value)}
           </dd>
         </div>
       ))}
@@ -57,7 +57,7 @@ function SnapshotSections({ snapshot }: { snapshot: PublicSnapshot }) {
                 {metric.status === 'not_estimable' ? (
                   <p className="mt-2 text-[14px]">Not estimable is distinct from zero impact.</p>
                 ) : (
-                  <p className="mt-2 text-[24px] tabular-nums">{format(metric.value, 4)} <span className="text-[14px]">{metric.unit}</span></p>
+                  <p className="mt-2 text-[24px] tabular-nums">{formatInteger(metric.value)} <span className="text-[14px]">{metric.unit}</span></p>
                 )}
                 {metric.reason ? <p className="mt-2 text-[14px]">{metric.reason}</p> : null}
                 {metric.required_evidence?.length ? (

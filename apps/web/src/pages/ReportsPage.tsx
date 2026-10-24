@@ -85,7 +85,7 @@ function CheckboxRow({ checked, onToggle, label, disabled = false }: {
 function PreviewPage({ model, page }: { model: ReportModel; page: number }) {
   const section = model.sections[page];
   return (
-    <article className="flex w-[560px] max-w-full flex-col gap-5 rounded bg-white p-10 shadow-[0_12px_32px_rgba(21,63,53,0.1),0_1px_2px_rgba(21,63,53,0.08)]">
+    <article className="flex w-[560px] max-w-full flex-col gap-5 rounded border border-pv-divider bg-white p-10">
       <div className="flex items-start justify-between gap-4">
         <img src={reportLogo} alt="Pax Virentia" className="h-14 w-auto" />
         <div className="text-right text-[12px] leading-4 text-pv-muted">

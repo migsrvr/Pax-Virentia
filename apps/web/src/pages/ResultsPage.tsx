@@ -3,7 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Sparkles } from 'lucide-react';
 import { api, ApiError } from '../services/api';
-import { assumptionRows, emissionsOf, errorMessage, format, listRuns } from '../services/simulation';
+import { assumptionRows, emissionsOf, errorMessage, formatInteger, formatRate, listRuns } from '../services/simulation';
 import type { Explanation, Results } from '../services/simulation';
 import { Chip, SectionCard, btnPrimary, btnSecondary } from './scenarios/shared';
 import StatusBadge from '../components/common/StatusBadge';
@@ -74,34 +74,59 @@ export default function ResultsPage() {
     {data && <>
       <div className="flex flex-wrap items-center gap-3"><Chip tone="info">Simulated estimate</Chip>
         {p && <Chip tone={p.technology.evidence_status === 'unverified' ? 'warn' : 'neutral'}>{p.technology.evidence_status} specification</Chip>}
-        {p && <span className="text-sm text-pv-muted">{format(p.volume_m3)} m³ · {p.period_start} – {p.period_end}</span>}
+        {p && <span className="text-sm text-pv-muted">{formatInteger(p.volume_m3)} m³ · {p.period_start} – {p.period_end}</span>}
       </div>
       {!!data.warnings?.length && <SectionCard className="gap-3"><h2 className="text-lg font-semibold">Scientific limitations</h2>
         <ul className="list-disc space-y-2 pl-5 text-sm">{data.warnings.map(warning => <li key={warning}>{warning}</li>)}</ul></SectionCard>}
       <nav aria-label="Result sections" className="flex flex-wrap gap-2">{[['overview', 'Overview'], ['assumptions', 'Inputs and provenance']].map(([id, title]) => <button key={id} type="button" aria-current={tab === id ? 'page' : undefined} onClick={() => setTab(id)} className={tab === id ? btnPrimary : btnSecondary}>{title}</button>)}</nav>
       {tab === 'overview' ? <>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          {[['Energy consumption', format(data.energy.total_kwh), 'kWh'], ['Electricity-associated emissions', format(emissions), carbonUnit],
-            ['Operating cost', format(e?.total_opex_php), 'PHP']].map(([title, value, unit]) => <SectionCard className="gap-3" key={title}>
-              <h2 className="text-sm text-pv-muted">{title}</h2><p className="text-2xl font-semibold tabular-nums">{value} <span className="text-sm font-normal">{unit}</span></p>
-          </SectionCard>)}
+          <SectionCard className="gap-3"><h2 className="text-sm text-pv-muted">Energy consumption</h2>
+            <p className="text-2xl font-semibold tabular-nums">{formatInteger(data.energy.total_kwh)} <span className="text-sm font-normal">kWh</span></p>
+            <p className="text-xs text-pv-muted">Energy intensity {formatRate(data.energy.energy_intensity_kwh_per_m3, 2)} kWh/m³</p>
+          </SectionCard>
+          <SectionCard className="gap-3"><h2 className="text-sm text-pv-muted">Electricity-associated emissions</h2>
+            <p className="text-2xl font-semibold tabular-nums">{formatInteger(emissions)} <span className="text-sm font-normal">{carbonUnit}</span></p>
+          </SectionCard>
+          <SectionCard className="gap-3"><h2 className="text-sm text-pv-muted">Operating cost</h2>
+            <p className="text-2xl font-semibold tabular-nums">{formatInteger(e?.total_opex_php)} <span className="text-sm font-normal">PHP</span></p>
+            {e && <p className="text-xs text-pv-muted">Cost intensity {formatRate(costIntensity, 2)} PHP/m³</p>}
+          </SectionCard>
           <SectionCard className="gap-3"><h2 className="text-sm text-pv-muted">Downstream ecosystem stress</h2>
-            {data.ecology?.status === 'not_estimable' ? <StatusBadge status="not_estimable" /> : <p>{data.ecology ? `${format(data.ecology.value)} ${data.ecology.unit ?? ''}` : 'Not requested'}</p>}
+            {data.ecology?.status === 'not_estimable' ? <StatusBadge status="not_estimable" /> : <p>{data.ecology ? `${formatRate(data.ecology.value, 2)} ${data.ecology.unit ?? ''}` : 'Not requested'}</p>}
           </SectionCard>
         </div>
+        <SectionCard className="gap-3"><div className="flex flex-wrap items-center justify-between gap-4"><h2 className="text-lg font-semibold">Gemini AI explanation</h2>
+          <button type="button" disabled={generate.isPending && generateForSelected} onClick={() => generate.mutate(runId!)} className={btnSecondary + ' disabled:opacity-50'}><Sparkles size={18} aria-hidden />{generate.isPending && generateForSelected ? 'Generating explanation…' : 'Explain these results'}</button></div>
+          <p className="text-sm text-pv-muted">Generated narratives explain stored numerical results. They do not replace source evidence or calculation methods.</p>
+          {explanation.isPending && <p role="status">Checking for a saved explanation…</p>}
+          {(explanation.isError || generate.isError && generateForSelected) && <p role="alert" className="text-pv-err-ink">{errorMessage(generate.isError && generateForSelected ? generate.error : explanation.error)}</p>}
+          {narrative ? <div className="flex flex-col gap-3"><p className="whitespace-pre-wrap">{narrative.narrative ?? narrative.summary}</p>
+            {!!narrative.key_findings?.length && <ul className="list-disc pl-5">{narrative.key_findings.map(item => <li key={item}>{item}</li>)}</ul>}
+            {!!narrative.limitations?.length && <><h3 className="font-semibold">Explanation limitations</h3><ul className="list-disc pl-5">{narrative.limitations.map(item => <li key={item}>{item}</li>)}</ul></>}
+          </div> : explanation.isSuccess && <p className="text-sm text-pv-muted">No explanation has been saved for this run.</p>}
+        </SectionCard>
         <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
-          <SectionCard>
+          <SectionCard className="gap-4">
             <h2 className="text-lg font-semibold">Energy breakdown</h2>
             {energyParts.length ? <>
               <div aria-hidden="true" className="flex h-8 overflow-hidden rounded-lg bg-pv-chip">{energyParts.map((part, index) => <div key={part.title} className={index % 2 ? 'bg-pv-forest' : 'bg-pv-teal'} style={{ width: `${data.energy.total_kwh > 0 ? Math.max(0, Math.min(100, part.value / data.energy.total_kwh * 100)) : 0}%` }} />)}</div>
-              <table className="w-full text-left text-sm"><caption className="sr-only">Energy contributions used in the visual breakdown</caption><thead><tr><th scope="col">Equipment</th><th scope="col" className="text-right">Energy (kWh)</th></tr></thead><tbody>{energyParts.map(part => <tr key={part.title} className="border-t border-pv-hairline"><th scope="row" className="py-3 font-normal">{part.title}</th><td className="text-right tabular-nums">{format(part.value)}</td></tr>)}</tbody></table>
+              <details className="text-sm">
+                <summary className="cursor-pointer font-medium text-pv-teal">View equipment line items</summary>
+                <ul className="mt-2 divide-y divide-pv-hairline">{energyParts.map(part => <li key={part.title} className="flex items-center justify-between gap-4 py-2"><span>{part.title}</span><span className="tabular-nums">{formatInteger(part.value)} kWh</span></li>)}</ul>
+              </details>
               <p className="text-xs text-pv-muted">Breakdown derived from this run’s frozen equipment duties.</p>
             </> : <p className="text-sm text-pv-muted">Equipment-level data is not available for this run.</p>}
-            <p>Energy intensity: <span className="font-semibold">{format(data.energy.energy_intensity_kwh_per_m3, 4)} kWh/m³</span></p>
+            <p>Energy intensity: <span className="font-semibold">{formatRate(data.energy.energy_intensity_kwh_per_m3, 2)} kWh/m³</span></p>
           </SectionCard>
-          <SectionCard><h2 className="text-lg font-semibold">Operating cost breakdown</h2>
-            {e ? <><table className="w-full text-left text-sm"><caption className="sr-only">Operating cost components for the modeled period</caption><thead><tr><th scope="col">Component</th><th scope="col" className="text-right">Cost (PHP)</th></tr></thead><tbody>{costParts.map(([title, value]) => <tr key={title} className="border-t border-pv-hairline"><th scope="row" className="py-3 font-normal">{title}</th><td className="text-right tabular-nums">{format(value)}</td></tr>)}</tbody></table>
-              <p>Cost intensity: <span className="font-semibold">{format(costIntensity, 4)} PHP/m³</span></p></> : <p>Economics was not requested for this run.</p>}
+          <SectionCard className="gap-4"><h2 className="text-lg font-semibold">Operating cost breakdown</h2>
+            {e ? <>
+              <div aria-hidden="true" className="flex h-8 overflow-hidden rounded-lg bg-pv-chip">{costParts.map(([title, value], index) => <div key={title} className={index % 2 ? 'bg-pv-forest' : 'bg-pv-teal'} style={{ width: `${e.total_opex_php > 0 ? Math.max(0, Math.min(100, value / e.total_opex_php * 100)) : 0}%` }} />)}</div>
+              <details className="text-sm">
+                <summary className="cursor-pointer font-medium text-pv-teal">View cost line items</summary>
+                <ul className="mt-2 divide-y divide-pv-hairline">{costParts.map(([title, value]) => <li key={title} className="flex items-center justify-between gap-4 py-2"><span>{title}</span><span className="tabular-nums">{formatInteger(value)} PHP</span></li>)}</ul>
+              </details>
+              <p>Cost intensity: <span className="font-semibold">{formatRate(costIntensity, 2)} PHP/m³</span></p></> : <p>Economics was not requested for this run.</p>}
           </SectionCard>
         </div>
         <SectionCard><h2 className="text-lg font-semibold">Ecological evidence gate</h2>
@@ -114,16 +139,6 @@ export default function ResultsPage() {
           <dt className="break-words text-sm text-pv-muted">{term}</dt><dd className="break-words text-sm">{value}</dd>
         </div>)}</dl>
       </SectionCard>}
-      <SectionCard><div className="flex flex-wrap items-center justify-between gap-4"><h2 className="text-lg font-semibold">AI explanation</h2>
-        <button type="button" disabled={generate.isPending && generateForSelected} onClick={() => generate.mutate(runId!)} className={btnSecondary + ' disabled:opacity-50'}><Sparkles size={18} aria-hidden />{generate.isPending && generateForSelected ? 'Generating explanation…' : 'Explain these results'}</button></div>
-        <p className="text-sm text-pv-muted">Generated narratives explain stored numerical results. They do not replace source evidence or calculation methods.</p>
-        {explanation.isPending && <p role="status">Checking for a saved explanation…</p>}
-        {(explanation.isError || generate.isError && generateForSelected) && <p role="alert" className="text-pv-err-ink">{errorMessage(generate.isError && generateForSelected ? generate.error : explanation.error)}</p>}
-        {narrative ? <div className="flex flex-col gap-3"><p className="whitespace-pre-wrap">{narrative.narrative ?? narrative.summary}</p>
-          {!!narrative.key_findings?.length && <ul className="list-disc pl-5">{narrative.key_findings.map(item => <li key={item}>{item}</li>)}</ul>}
-          {!!narrative.limitations?.length && <><h3 className="font-semibold">Explanation limitations</h3><ul className="list-disc pl-5">{narrative.limitations.map(item => <li key={item}>{item}</li>)}</ul></>}
-        </div> : explanation.isSuccess && <p className="text-sm text-pv-muted">No explanation has been saved for this run.</p>}
-      </SectionCard>
       <PublicationPanel runId={runId} defaultTitle={`${selectedRun?.scenario_name ?? 'Scenario'} — simulation results`} />
     </>}
   </div>;

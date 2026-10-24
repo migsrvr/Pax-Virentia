@@ -8,7 +8,6 @@ import {
   FileText,
   GitCompareArrows,
   Globe,
-  Info,
   LayoutDashboard,
   Lightbulb,
   SlidersHorizontal,
@@ -54,7 +53,7 @@ function NavItem({ item }: { item: NavEntry }) {
           'flex h-11 items-center gap-3 rounded-lg px-3 text-sm font-medium transition-colors',
           isActive
             ? 'bg-pv-mint text-pv-forest'
-            : 'text-pv-side-text hover:bg-white/5 hover:text-white',
+            : 'text-pv-side-text hover:bg-pv-pine hover:text-white',
         )
       }
     >
@@ -84,7 +83,7 @@ export default function Sidebar() {
           <div className="min-w-0 flex-1">
             <div className="text-xs leading-4 text-pv-side-muted">Representative plant</div>
             <div className="mt-0.5 text-sm font-medium leading-5 text-white">
-              Sample WTP · Luzon–Visayas
+              Water District Facility · Plant 1
             </div>
           </div>
         </div>
@@ -107,16 +106,6 @@ export default function Sidebar() {
         {REFERENCE_NAV.map((item) => (
           <NavItem key={item.to} item={item} />
         ))}
-
-        <div className="mt-auto flex gap-3 border-t border-pv-pine-border pt-4">
-          <Info size={20} className="mt-0.5 shrink-0 text-pv-mint" aria-hidden="true" />
-          <div className="min-w-0">
-            <div className="text-xs font-semibold leading-4 text-white">Offline simulation</div>
-            <p className="mt-1 text-xs leading-4 text-pv-side-muted">
-              Simulated estimates from sample data. No live plant monitoring or sensor feeds.
-            </p>
-          </div>
-        </div>
       </nav>
     </aside>
   );

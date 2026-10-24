@@ -154,6 +154,19 @@ export function hydrateDraft(scenario: Scenario, revision: Revision, technologie
 export const number = (value: string) => value.trim() ? Number(value.replace(/,/g, '')) : NaN;
 export const format = (value: number | null | undefined, decimals = 2) =>
   value == null || !Number.isFinite(value) ? '—' : value.toLocaleString('en-PH', { maximumFractionDigits: decimals });
+/** Whole-number display for headline metrics and public totals. */
+export const formatInteger = (value: number | null | undefined) =>
+  value == null || !Number.isFinite(value) ? '—' : Math.round(value).toLocaleString('en-PH', { maximumFractionDigits: 0 });
+/** Fixed-precision display for intensities and rates; two decimals by default. */
+export const formatRate = (value: number | null | undefined, decimals = 2) =>
+  value == null || !Number.isFinite(value)
+    ? '—'
+    : value.toLocaleString('en-PH', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+/** Signed percentage with at most one decimal place. */
+export const formatDeltaPct = (value: number | null | undefined) =>
+  value == null || !Number.isFinite(value)
+    ? '—'
+    : `${value > 0 ? '+' : value < 0 ? '−' : ''}${formatRate(Math.abs(value), 1)}%`;
 export const label = (key: string) => ({ energy: 'Energy consumption', carbon: 'Electricity-associated emissions', economics: 'Operating cost', ecology: 'Downstream ecosystem stress' }[key] ?? key.replace(/_/g, ' '));
 export function errorMessage(error: unknown): string {
   if (error instanceof ApiError && error.fieldErrors.length) return `${error.message} ${error.fieldErrors.map(e => `${e.field}: ${e.message}`).join(' ')}`;

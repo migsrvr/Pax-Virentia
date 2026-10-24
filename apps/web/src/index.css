@@ -52,7 +52,6 @@ h1, h2, h3, .font-heading {
   background: #fff;
   border: 1px solid #D8E2E6;
   border-radius: 12px;
-  box-shadow: 0 1px 3px rgba(36, 52, 61, 0.05);
 }
 
 /* Thin scrollbars for rails */

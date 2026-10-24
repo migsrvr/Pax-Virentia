@@ -154,9 +154,6 @@ export default function LoginPage() {
               No live plant monitoring, sensor feeds or plant integration. Results are simulated
               estimates, not measurements or validated findings.
             </p>
-            <span className="inline-flex h-6 w-fit items-center rounded-full bg-pv-chip px-2 text-[12px] font-medium leading-4 text-pv-muted">
-              Sample data in this prototype
-            </span>
           </div>
         </div>
       </section>

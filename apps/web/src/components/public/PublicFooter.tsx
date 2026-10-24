@@ -89,8 +89,8 @@ export default function PublicFooter({ current }: { current?: string } = {}) {
         <div className="mx-auto w-full max-w-[1264px] px-6 py-4 lg:px-8">
           <p className="text-[12px] leading-4 text-pv-ink-light">
             Figures on this site are simulated estimates from an offline model. They are not live
-            measurements, validated results or regulatory approvals. © 2026 Pax Virentia
-            research prototype.
+            measurements, validated results or regulatory approvals. © 2026 Pax Virentia. All rights
+            reserved.
           </p>
         </div>
       </div>
