@@ -1,83 +1,76 @@
-import StatusBadge from '../components/common/StatusBadge';
 import EvidenceNotice from '../components/common/EvidenceNotice';
-import { GRID_FACTORS, MODEL_REGISTRY } from '../services/mockData';
+import { useCatalogs } from '../services/catalogs';
+import { errorMessage, format } from '../services/simulation';
+import { Chip, SectionCard } from './scenarios/shared';
+
+const TH = 'border-b border-pv-divider px-3 py-2 text-[12px] font-medium text-pv-muted';
+const TD = 'border-b border-pv-hairline px-3 py-2.5 align-top';
 
 export default function SettingsPage() {
+  const catalogs = useCatalogs();
   return (
-    <div className="space-y-5">
-      <p className="max-w-3xl text-[14px] text-slate-ink-light">
-        Manage authorized workspace settings, factors, models, and users. Curated factors and model
-        artifacts are immutable — corrections create a new version; deprecation preserves old runs.
-      </p>
+    <div className="flex flex-col gap-6 text-pv-ink">
+      <div className="flex max-w-[760px] flex-col gap-1">
+        <h1 className="text-[28px] font-semibold tracking-tight">Workspace settings</h1>
+        <p className="text-[14px] text-pv-muted">
+          The versioned grid factors and calculation models available to new scenarios. Each run freezes the exact
+          values it used, so later catalog changes never alter stored results.
+        </p>
+      </div>
 
-      <section aria-label="Grid factors" className="pv-card p-5">
-        <div className="flex items-center justify-between gap-2">
-          <h2 className="font-heading text-[17px] font-bold">Grid factors (DOE / IEA)</h2>
-          <StatusBadge status="valid" />
-        </div>
-        <p className="text-[12.5px] text-slate-ink-muted">Factor set 2026.1 · match region, year/period and methodology.</p>
-        <div className="mt-3 overflow-x-auto pv-scroll">
-          <table className="w-full min-w-[760px] text-left text-[13.5px]">
-            <thead>
-              <tr className="border-b border-slate-ink-border text-slate-ink-light">
-                {['Region', 'Year', 'Gas basis', 'Method', 'kg/kWh', 'Reference'].map((h) => (
-                  <th key={h} className="px-2 py-2 text-[12px] font-bold uppercase tracking-wide">{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="tnum divide-y divide-slate-ink-border">
-              {GRID_FACTORS.map((f) => (
-                <tr key={f.factor_id}>
-                  <td className="px-2 py-2.5 font-bold">{f.grid_region}</td>
-                  <td className="px-2 py-2.5">{f.reporting_year}</td>
-                  <td className="px-2 py-2.5">{f.gas_basis}</td>
-                  <td className="px-2 py-2.5">{f.accounting_method}</td>
-                  <td className="px-2 py-2.5 font-bold">{f.kg_co2e_per_kwh.toFixed(4)}</td>
-                  <td className="px-2 py-2.5 text-slate-ink-light">{f.reference}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
+      {catalogs.isPending ? <p role="status">Loading catalogs…</p> : null}
+      {catalogs.isError ? <p role="alert" className="text-pv-err-ink">{errorMessage(catalogs.error)}</p> : null}
+      {catalogs.data ? (
+        <>
+          <SectionCard className="gap-3">
+            <h2 className="text-[18px] font-semibold">Grid emission factors</h2>
+            <p className="text-[12px] text-pv-muted">A scenario’s whole reporting period must fall within the factor’s year and region.</p>
+            <div className="overflow-x-auto pv-scroll">
+              <table className="w-full min-w-[760px] border-collapse text-left text-[14px]">
+                <thead><tr>{['Region', 'Year', 'Gas basis', 'Method', 'kg per kWh', 'Evidence', 'Source'].map((h) => <th key={h} scope="col" className={TH}>{h}</th>)}</tr></thead>
+                <tbody className="tabular-nums">
+                  {catalogs.data.factors.map((factor) => (
+                    <tr key={factor.version_id}>
+                      <td className={TD + ' font-medium'}>{factor.grid_region}</td>
+                      <td className={TD}>{factor.reporting_year}</td>
+                      <td className={TD}>{factor.gas_basis}</td>
+                      <td className={TD}>{factor.factor_method}</td>
+                      <td className={TD + ' font-medium'}>{format(factor.kg_per_kwh, 4)}</td>
+                      <td className={TD}><Chip tone={factor.evidence_status === 'verified' ? 'ok' : 'neutral'}>{factor.evidence_status.replace('_', ' ')}</Chip></td>
+                      <td className={TD + ' text-pv-muted'}>{factor.source_ref}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </SectionCard>
 
-      <section aria-label="Model registry" className="pv-card p-5">
-        <div className="flex items-center justify-between gap-2">
-          <h2 className="font-heading text-[17px] font-bold">Model registry</h2>
-          <button className="rounded-lg border border-slate-ink-border bg-white px-3 py-1.5 text-[13px] font-bold hover:bg-mist">
-            Propose new version (admin)
-          </button>
-        </div>
-        <div className="mt-3 overflow-x-auto pv-scroll">
-          <table className="w-full min-w-[760px] text-left text-[13.5px]">
-            <thead>
-              <tr className="border-b border-slate-ink-border text-slate-ink-light">
-                {['Module', 'Algorithm', 'Status', 'Evidence', 'Supported ranges'].map((h) => (
-                  <th key={h} className="px-2 py-2 text-[12px] font-bold uppercase tracking-wide">{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-ink-border">
-              {MODEL_REGISTRY.map((m) => (
-                <tr key={m.module}>
-                  <td className="px-2 py-2.5 font-bold capitalize">{m.module}</td>
-                  <td className="tnum px-2 py-2.5">{m.algorithm}</td>
-                  <td className="px-2 py-2.5">
-                    <StatusBadge status={m.status === 'approved' ? 'valid' : 'not_estimable'} />
-                  </td>
-                  <td className="px-2 py-2.5 text-slate-ink-light">{m.evaluated}</td>
-                  <td className="tnum px-2 py-2.5 text-slate-ink-light">{m.ranges}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
+          <SectionCard className="gap-3">
+            <h2 className="text-[18px] font-semibold">Calculation models</h2>
+            <div className="overflow-x-auto pv-scroll">
+              <table className="w-full min-w-[760px] border-collapse text-left text-[14px]">
+                <thead><tr>{['Module', 'Version', 'Status', 'Description'].map((h) => <th key={h} scope="col" className={TH}>{h}</th>)}</tr></thead>
+                <tbody>
+                  {catalogs.data.models.map((model) => (
+                    <tr key={model.module}>
+                      <td className={TD + ' font-medium capitalize'}>{model.module}</td>
+                      <td className={TD + ' font-mono text-[12px]'}>{model.version}</td>
+                      <td className={TD}><Chip tone={model.status === 'production' ? 'ok' : 'warn'}>{model.status}</Chip></td>
+                      <td className={TD + ' text-pv-muted'}>{model.description}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="text-[12px] text-pv-muted">Catalog versions are managed in the backend; there is no in-app editor yet.</p>
+          </SectionCard>
+        </>
+      ) : null}
 
       <EvidenceNotice
         variant="attribution"
         title="Workspace roles"
-        body="Analyst / plant operator prepares data and runs; Reviewer reads and approves snapshots; Administrator manages users, factors, models and withdrawal; Public visitor reads published summaries only. One research workspace for the MVP — no multi-organization tenancy."
+        body="Analysts prepare data, run scenarios, export reports and submit public snapshots. Reviewers approve, reject or withdraw public snapshots, and cannot decide on their own submissions. Administrators can do both. Public visitors read approved summaries only. Accounts are provisioned with `python -m app.bootstrap create-user`."
       />
     </div>
   );

@@ -105,9 +105,13 @@ restartable and scalable, but requires a second paid service. See the
   adapter. The repository refuses any backend other than PostgreSQL or an explicit `sqlite:///`
   URL.
 
-Schema creation is an explicit bootstrap step. **API startup itself never performs DDL.** On Render
-the start command runs `python -m app.bootstrap` before uvicorn, so bootstrap DDL executes on every
-deploy; it is idempotent and must use a database path that permits DDL.
+Schema changes are versioned Alembic revisions in `backend/app/migrations/versions/`
+(`0001` baseline, `0002` publication workflow and audit trail, `0003` reports, `0004` insight
+reviews). **API startup itself never performs DDL.** `python -m app.bootstrap` runs
+`alembic upgrade head`; on Render the start command runs it before uvicorn on every deploy. Upgrades
+are idempotent, and revision `0001` uses `IF NOT EXISTS`, so databases created before migrations
+existed are adopted in place. The connection must permit DDL. `alembic current` / `alembic upgrade head`
+also work from `backend/` (see `backend/alembic.ini`).
 
 ### 2.2 Tables
 
@@ -122,7 +126,10 @@ deploy; it is idempotent and must use a database path that permits DDL.
 | `jobs` | Durable work queue | One per run; attempt counter, lease token/expiry, cancellation flag. |
 | `idempotency_keys` | Submission replay protection | `PRIMARY KEY(user_id, endpoint, key)`; request hash. |
 | `dataset_versions` | Evidence versions | Exact CSV bytes, checksum, quality report, schema version, evidence label. |
-| `publications` | Public snapshots | Unique slug, frozen `snapshot_data`, publisher, publication time, view count. |
+| `publications` | Reviewed public snapshots | Unique slug, frozen redacted `snapshot_data`, `status` in `pending_review, published, rejected, withdrawn`, submitter, reviewer and decision reason, withdrawer and reason, publication time, view count. |
+| `audit_events` | Audit trail | Actor, action (e.g. `publication.approved`), entity, timestamp, change summary. |
+| `reports` | Report export requests | Type, title, sections/formats, run IDs and their snapshot hashes. Files are regenerated on download. |
+| `insight_reviews` | Per-user review marks | `PRIMARY KEY(user_id, insight_key)`; status `reviewed` or `dismissed`. |
 | `ai_explanations` | Stored narratives | `UNIQUE(run_id, focus)`; narrative, key drivers, grounded evidence. |
 
 ### 2.3 Immutability and lineage
@@ -218,7 +225,8 @@ the connection count. See the
 
 ### 3.4 Frontend configuration
 
-The web app calls the relative path `/api/v1`; no API base URL is embedded in the bundle. In
+The web app defaults to the relative path `/api/v1`. It supports an optional public
+`VITE_API_BASE_URL` build variable, which must remain relative (`/api/v1`) for production. In
 development, `vite.config.ts` proxies `/api` to `http://localhost:8000` with `changeOrigin: true`.
 
 - Never put `GEMINI_API_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `DATABASE_URL`, or `SECRET_KEY` in a
@@ -250,8 +258,15 @@ cp .env.example .env             # then edit DATABASE_URL
 python3 -m app.bootstrap
 ```
 
-`python3 -m app.bootstrap` creates the schema if absent and provisions the configured seed analyst
-plus `ana.santos@example.com`. It is safe to re-run; existing IDs are preserved.
+`python3 -m app.bootstrap` applies all migrations and provisions the configured seed account
+(`SEED_USER_*`) if it is absent. It is safe to re-run; existing IDs are preserved.
+
+Reviewers and administrators are provisioned separately (there is no public sign-up):
+
+```bash
+python3 -m app.bootstrap create-user --email reviewer@example.org --role reviewer --name "R. Reviewer"
+# password from --password, PV_NEW_USER_PASSWORD, or an interactive prompt; re-running updates the role
+```
 
 Choose the worker mode explicitly so local behavior matches production.
 
@@ -299,13 +314,19 @@ Open `http://localhost:5173`. The dev proxy forwards `/api` to port 8000.
 
 | Task | Command |
 | --- | --- |
-| Bootstrap schema and seed users | `cd backend && python3 -m app.bootstrap` |
+| Apply migrations and seed account | `cd backend && python3 -m app.bootstrap` |
+| Provision a reviewer/administrator | `cd backend && python3 -m app.bootstrap create-user --email … --role reviewer` |
 | Run API with embedded worker | `cd backend && ENABLE_EMBEDDED_WORKER=true uvicorn app.main:app --reload --port 8000` |
 | Run API without worker | `cd backend && ENABLE_EMBEDDED_WORKER=false uvicorn app.main:app --reload --port 8000` |
 | Run separate worker | `cd backend && PYTHONPATH=. python3 -m app.jobs.worker` |
-| Backend tests | `PYTHONPATH=backend python3 -m unittest discover -s backend/tests -p "test_*.py" -v` |
-| Frontend type-check and build | `cd apps/web && npm run build` |
-| Frontend lint | `cd apps/web && npm run lint` |
+| Backend tests | `cd backend && pip install -e ".[dev]" && pytest -v` (120 s per-test timeout) |
+| Frontend type-check and build | `cd apps/web && npm run typecheck && npm run build` |
+| Frontend lint | `cd apps/web && npm run lint` (ESLint 9 flat config, zero warnings) |
+| Frontend tests | `cd apps/web && npm test` (Vitest + Testing Library) |
+
+CI runs both suites on pushes and pull requests to `main` (`.github/workflows/test-backend.yml`,
+`.github/workflows/test-web.yml`); the frontend job also fails if prototype fixture identifiers reach
+the production bundle.
 
 ---
 
@@ -499,22 +520,29 @@ PHP 1,000. None of these constants is a recommended Philippine factor or tariff.
    inputs were wrong.
 6. **Compare.** Compare only compatible runs. Read each metric separately; a decrease in one metric
    does not establish sustainability.
-7. **Explain and export.** Request an AI explanation if useful. Export from stored facts and include
-   limitations and sources.
+7. **Explain and export.** Request an AI explanation if useful. On **Reports**, choose runs, sections
+   and formats; the preview, PDF and CSV are all generated from stored results and always end with the
+   methodology and limitations.
+8. **Submit for review.** On Results or Reports, submit the run's redacted public snapshot. It stays
+   private until a different reviewer approves it.
 
 ### 7.2 Reviewers
 
-1. Open a completed run and its stored results.
-2. Check evidence labels, units, frozen versions, and the comparison compatibility.
-3. Confirm the ecological card is `not_estimable` unless an approved local model exists.
-4. Preview the redacted public schema.
-5. Publish or reject with a reason. Publication is a reviewed snapshot, not regulatory approval.
-6. Withdraw public access immediately if a published snapshot is found to be misleading.
+1. Open **Publication reviews** (`/reviews`, visible to reviewers and administrators).
+2. For each snapshot awaiting review, open its run and check evidence labels, units, frozen versions,
+   and comparison compatibility.
+3. Confirm the ecological metric is `not_estimable` unless an approved local model exists.
+4. Preview the exact public payload.
+5. Approve, or reject with a reason. You cannot decide on your own submission. Publication is a
+   reviewed snapshot, not regulatory approval.
+6. Withdraw a published snapshot (with a reason) if it is found to be misleading; public access ends
+   immediately and the link shows a withdrawal notice. Every decision is in the audit trail.
 
 ### 7.3 Public visitors
 
-Public pages show only explicitly published, redacted summaries with source dates and limitations.
-They do not expose drafts, raw files, internal notes, or unpublished runs.
+Public pages show only approved, redacted summaries with source dates and limitations, read from
+`/api/v1/public/reports`. With nothing published they say so; they never show sample figures. They
+do not expose drafts, raw files, internal notes, or unpublished runs.
 
 ---
 
@@ -522,7 +550,9 @@ They do not expose drafts, raw files, internal notes, or unpublished runs.
 
 - Argon2 password hashing; opaque random session tokens stored only as hashes.
 - `__Host-pv_session` cookie: `Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/`, no `Domain`.
-- Exact-origin and CSRF checks on state-changing private requests, including login.
+- Exact-origin and CSRF checks on state-changing private requests, including logout; login checks
+  the origin. The CSRF token is an HMAC of the session token, so `GET /auth/session` can re-issue it
+  after a browser restart or in a new tab. Keep `SECRET_KEY` stable across deploys.
 - Server-side role enforcement on every private endpoint; the proxy is not an authorization layer.
 - Upload boundary: file and row limits, UTF-8 validation, no executable deserialization,
   parameterized SQL.
@@ -543,8 +573,11 @@ They do not expose drafts, raw files, internal notes, or unpublished runs.
 | `403 origin_rejected` on login | Vercel origin missing from `ALLOWED_ORIGINS` | Add the exact production or preview origin as a JSON array entry, then redeploy Render. No trailing slash. |
 | `503`/connection error from API | Wrong `DATABASE_URL`, pooler vs direct mismatch, or Supabase paused | Verify the URI, password encoding, and project status; bootstrap with a 5432 session connection. See [pooler guidance](DEPLOYMENT_GUIDE.md#64-supabase-connection-pooler-port-5432-vs-6543). |
 | `401 authentication_required` | Missing/expired cookie, third-party cookie blocking, or cookie rejected over plain HTTP | Keep browser calls same-origin through the Vercel proxy; production must be HTTPS. Do not add a `Domain` attribute to `__Host-pv_session`. |
-| `403 csrf_rejected` | Missing `X-CSRF-Token`, untrusted `Origin`, or lost sessionStorage | Fetch the token from login/session and send the exact allowed origin; reload and sign in again if sessionStorage was cleared. |
-| `403 insufficient_role` | Reviewer attempting an analyst mutation | Use an analyst/administrator account, or wait for the reviewer publication guard. |
+| `403 csrf_rejected` | Untrusted `Origin`, or a token from another session | The client refreshes the token from `/auth/session` and retries once automatically. If it persists, check `ALLOWED_ORIGINS` and that `SECRET_KEY` did not change mid-session. |
+| `403 insufficient_role` | Role cannot perform the action (e.g. a reviewer submitting, an analyst approving) | Use an account with the right role; provision one with `app.bootstrap create-user`. |
+| `403 self_review_forbidden` | Deciding on your own submission | Ask another reviewer or administrator. |
+| `409 invalid_publication_state` | Approving a non-pending or withdrawing a non-published snapshot | Refresh the review queue. |
+| Public report shows "no longer available" | It was withdrawn (`410`) | Expected; submit and approve a corrected snapshot. |
 | `409 results_not_available` | Reading results before `succeeded` | Poll status; check worker logs for `calculation_failed`. |
 | `422 incompatible_comparison` | Volume, period, currency, region, boundary, or factor method differs | Re-create the intervention with matching assumptions. |
 | `422` factor errors | Missing factor, region mismatch, or reporting year does not cover the period | Select a factor for the same region and year, in Asia/Manila terms. |
@@ -558,14 +591,13 @@ They do not expose drafts, raw files, internal notes, or unpublished runs.
 
 | Item | Current state | Owner / next step |
 | --- | --- | --- |
-| Explanation/publication naming | Routes are implemented as `/runs/{id}/explain` and `/runs/{id}/publish`; the master plan uses plural `/explanations` and `/publications`. | Keep the implemented paths until a versioned contract decision changes them. |
-| Withdrawal | No `status`/`withdrawn_at` column yet. | Schema change, then route. |
-| Reviewer publication | Current mutation guard allows analyst/administrator only. | Add a reviewer-capable guard. |
+| Explanation naming | Implemented as `/runs/{id}/explain`; the master plan uses `/explanations`. Publications now use `/publications`. | Keep the implemented paths until a versioned contract decision changes them. |
+| Methodology wording | Generated from the live catalogs and implemented formulas. | Domain reviewer to approve the scientific wording. |
 | Catalog auth | `GET /catalogs/*` is currently unauthenticated. | Decide public vs private; add `require_session` if private. |
 | Treatment identity | Pax Silica remains unverified pending a technical source. | Researchers + adviser. |
 | Ecological model | No validated local exposure–response model or paired observations. | Domain adviser; otherwise formal scope revision. |
 | Energy ML | Deterministic baseline only; no training dataset or approved model artifact. | Research track with chronological splits and naive-baseline comparison. |
-| Factor data | Catalog serves 2024 factors; sample JSON is 2023. | Curate and version one authoritative factor set. |
+| Factor data | Catalog serves 2024 factors only, so periods outside 2024 cannot compute emissions; `research/data/grid_emission_factors.json` is a superseded 2023 note with different values (see `research/data/README.md`). | Curate, cite and version one authoritative factor set. |
 | Deployment topology | Supabase + Render + Vercel is documented in `docs/DEPLOYMENT_GUIDE.md`; quotas, regions, and paid-tier needs must be confirmed for the actual project. Free Render cold starts pause the embedded worker. | Technical lead; confirm always-on capacity before promising run completion. |
 | Origin matching | Production supports exact origins plus the single wildcard `https://*.vercel.app`; project-scoped wildcard patterns are not supported. The global wildcard trusts every matching Vercel subdomain as a CSRF origin. | Prefer exact production and preview origins; use the wildcard only with documented risk. |
 

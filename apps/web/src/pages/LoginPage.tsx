@@ -337,7 +337,7 @@ export default function LoginPage() {
               The public portal shows reviewed sustainability summaries without an account.
             </p>
             <Link
-              to="/public/pv-2026-10-08"
+              to="/public/home"
               className="inline-flex h-11 w-fit items-center gap-2 rounded-lg border border-pv-border-soft bg-white px-4 text-[14px] font-semibold leading-5 text-pv-ink transition-colors hover:border-pv-input-border"
             >
               Visit the public portal

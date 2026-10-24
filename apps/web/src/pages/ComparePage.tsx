@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { ArrowRight } from 'lucide-react';
 import { api, ApiError } from '../services/api';
@@ -9,12 +9,14 @@ import { Chip, SectionCard, btnPrimary, btnSecondary } from './scenarios/shared'
 import StatusBadge from '../components/common/StatusBadge';
 
 export default function ComparePage() {
+  // Links from comparison insights preselect a pair with ?baseline=&intervention=.
+  const [params] = useSearchParams();
   const runs = useQuery({ queryKey: ['runs'], queryFn: listRuns, refetchInterval: 15000 });
   const candidates = runs.data?.filter(run => run.status === 'succeeded') ?? [];
   const baselines = candidates.filter(run => run.kind === 'baseline');
   const interventions = candidates.filter(run => run.kind === 'intervention');
-  const [baselineSelection, setBaselineSelection] = useState<string | null>(null);
-  const [interventionSelection, setInterventionSelection] = useState<string | null>(null);
+  const [baselineSelection, setBaselineSelection] = useState<string | null>(() => params.get('baseline'));
+  const [interventionSelection, setInterventionSelection] = useState<string | null>(() => params.get('intervention'));
   const baselineId = baselineSelection ?? baselines[0]?.id ?? '';
   const interventionId = interventionSelection ?? interventions[0]?.id ?? '';
   const baseline = candidates.find(run => run.id === baselineId);

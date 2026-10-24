@@ -1,13 +1,15 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
-import { api } from './api';
+import { api, csrfStore } from './api';
+
+export type Role = 'analyst' | 'reviewer' | 'administrator';
 
 export interface SessionUser {
   id: string;
   email: string | null;
   display_name: string | null;
-  role: string;
+  role: Role | string;
 }
 
 interface AuthContextValue {
@@ -23,14 +25,21 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<SessionUser | null>(null);
   const [loading, setLoading] = useState(true);
-  const [csrfToken, setCsrfToken] = useState<string | null>(() => sessionStorage.getItem('pv-csrf'));
+  const [csrfToken, setCsrfToken] = useState<string | null>(() => csrfStore.get());
 
   useEffect(() => {
     let active = true;
     api
-      .get<{ user: SessionUser }>('/auth/session')
+      .get<{ user: SessionUser; csrf_token?: string }>('/auth/session')
       .then((payload) => {
-        if (active) setUser(payload.user);
+        if (!active) return;
+        setUser(payload.user);
+        // The server re-derives the token from the session cookie, so a restored
+        // browser or a new tab regains write access.
+        if (payload.csrf_token) {
+          csrfStore.set(payload.csrf_token);
+          setCsrfToken(payload.csrf_token);
+        }
       })
       .catch(() => {
         if (active) setUser(null);
@@ -49,9 +58,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       password,
       remember,
     });
-    setUser(payload.user);
+    csrfStore.set(payload.csrf_token);
     setCsrfToken(payload.csrf_token);
-    sessionStorage.setItem('pv-csrf', payload.csrf_token);
+    setUser(payload.user);
   }, []);
 
   const logout = useCallback(async () => {
@@ -60,7 +69,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } finally {
       setUser(null);
       setCsrfToken(null);
-      sessionStorage.removeItem('pv-csrf');
+      csrfStore.set(null);
     }
   }, []);
 

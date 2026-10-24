@@ -44,6 +44,28 @@ async def create_dataset(request: Request, source_ref: Annotated[str, Query(min_
                                   evidence_status, actor["user_id"])
 
 
+def dataset_summary(item):
+    """List rows omit raw CSV bytes and per-row findings; counts suffice for review."""
+    report = item["quality_report"]
+    return {key: item.get(key) for key in ("id", "source_ref", "evidence_status", "content_hash", "schema_version",
+                                           "created_by", "created_by_name", "created_at")} | {
+        "row_count": report.get("row_count", 0),
+        "column_count": report.get("column_count", 0),
+        "quality": {"missing_columns": len(report.get("missing_columns", [])),
+                    "critical_missing_values": report.get("critical_missing_values", 0),
+                    "invalid_values": len(report.get("invalid_values", [])),
+                    "duplicate_rows": len(report.get("duplicate_rows", [])),
+                    "outliers": sum(len(rows) for rows in report.get("outliers", {}).values())},
+    }
+
+
+@router.get("", dependencies=[Depends(require_session)])
+def list_datasets(limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0),
+                  repository=Depends(get_repository)):
+    page = repository.list_datasets(limit, offset)
+    return {"items": [dataset_summary(item) for item in page["items"]], "limit": limit, "offset": offset}
+
+
 @router.get("/{dataset_id}/quality", dependencies=[Depends(require_session)])
 def get_quality(dataset_id: UUID, repository=Depends(get_repository)):
     return repository.get_dataset(str(dataset_id))["quality_report"]

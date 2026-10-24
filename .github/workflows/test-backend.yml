@@ -9,6 +9,20 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: pv
+          POSTGRES_PASSWORD: pv
+          POSTGRES_DB: pv_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pv -d pv_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
@@ -23,6 +37,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e "./backend[dev]"
 
-      - name: Run calculation tests
+      - name: Run backend tests (SQLite suite plus PostgreSQL migration and workflow contracts)
+        env:
+          PV_TEST_POSTGRES_URL: postgresql://pv:pv@localhost:5432/pv_test
         run: |
           pytest backend/tests -v

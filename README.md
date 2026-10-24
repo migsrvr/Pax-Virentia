@@ -71,7 +71,7 @@ Central to this study is evaluating the operational trade-offs of the prospectiv
 
 ### A. Running the Frontend (UI)
 
-The frontend is pre-populated with realistic simulation fixtures from [`sample_plant_data.csv`](research/data/sample_plant_data.csv) and [`grid_emission_factors.json`](research/data/grid_emission_factors.json), making all pages, charts, and comparison views interactive immediately.
+Every workspace and public page reads stored data from the backend API; there are no built-in sample figures. Start the backend (section B), sign in, run scenarios, and submit a run for review to populate the public portal. [`sample_plant_data.csv`](research/data/sample_plant_data.csv) can be imported on the Datasets page. See [`research/data/README.md`](research/data/README.md) for the status of the research data files.
 
 #### In Windows (PowerShell / CMD / VS Code Terminal):
 Because the project resides on the Windows filesystem (`C:\Users\Miggy\Documents\Pax Virentia`), running npm from Windows avoids WSL permission quirks:

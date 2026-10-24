@@ -1,23 +1,20 @@
+import { useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { ApiError } from '../services/api';
-import { errorMessage, format, label } from '../services/simulation';
-import { SectionCard, btnSecondary } from './scenarios/shared';
+import PublicHeader from '../components/public/PublicHeader';
+import PublicFooter from '../components/public/PublicFooter';
+import DownloadConfirmDialog from '../components/public/DownloadConfirmDialog';
+import { LimitationsCard, LoadState } from '../components/public/PublicData';
+import { CARD_CLASS, OUTLINE_BTN, PRIMARY_BTN, boundaryText, publishedOn } from '../components/public/publicPortal';
 import StatusBadge from '../components/common/StatusBadge';
+import PublicReportUnavailablePage from './PublicReportUnavailablePage';
+import { getPublicReport, publicDownloadPath } from '../services/publications';
+import type { PublicSnapshot } from '../services/publications';
+import { format, label } from '../services/simulation';
 
-type PublicValue = string | number | boolean | null | string[];
-type PublicMetric = { key: string; value: number | null; unit?: string | null; status: string; reason?: string; required_evidence?: string[] };
-type Snapshot = {
-  boundary?: Record<string, PublicValue>;
-  metrics?: PublicMetric[];
-  provenance?: Record<string, PublicValue>;
-  limitations?: string[];
-  energy?: Record<string, PublicValue>;
-  carbon?: Record<string, PublicValue>;
-  economics?: Record<string, PublicValue>;
-  ecology?: { status: string; value: number | null; unit?: string | null; reason?: string; required_evidence?: string[] };
-};
-type PublishedReport = { title: string; summary: string; published_at: string; snapshot_data: Snapshot };
+const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+type PublicValue = string | number | boolean | null | undefined | string[];
 
 const fieldLabels: Record<string, string> = {
   volume_m3: 'Treated volume (m³)', period_start: 'Period start', period_end: 'Period end', currency: 'Currency',
@@ -32,55 +29,111 @@ const fieldLabels: Record<string, string> = {
 };
 
 function PublicFields({ fields }: { fields: Record<string, PublicValue> }) {
-  return <dl className="divide-y divide-pv-hairline">{Object.entries(fields).map(([key, value]) => <div key={key} className="grid grid-cols-1 gap-2 py-3 sm:grid-cols-2">
-    <dt className="text-sm text-pv-muted">{fieldLabels[key] ?? key.replace(/_/g, ' ')}</dt>
-    <dd className="break-words text-sm">{value === null ? 'Not supplied' : Array.isArray(value) ? value.join(', ') : typeof value === 'number' ? format(value, 4) : String(value)}</dd>
-  </div>)}</dl>;
+  return (
+    <dl className="divide-y divide-pv-line-soft">
+      {Object.entries(fields).map(([key, value]) => (
+        <div key={key} className="grid grid-cols-1 gap-2 py-3 sm:grid-cols-2">
+          <dt className="text-[14px] text-pv-ink-light">{fieldLabels[key] ?? key.replace(/_/g, ' ')}</dt>
+          <dd className="break-words text-[14px]">
+            {value === null || value === undefined ? 'Not supplied' : Array.isArray(value) ? value.join(', ') : typeof value === 'number' ? format(value, 4) : String(value)}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function SnapshotSections({ snapshot }: { snapshot: PublicSnapshot }) {
+  return (
+    <>
+      {snapshot.metrics.length ? (
+        <section className={`flex flex-col gap-4 p-6 ${CARD_CLASS}`}>
+          <h2 className="text-[18px] font-semibold">Published metrics</h2>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            {snapshot.metrics.map((metric) => (
+              <article key={metric.key} className="rounded-xl border border-pv-line p-4">
+                <h3 className="font-semibold">{label(metric.key)}</h3>
+                <div className="mt-3"><StatusBadge status={metric.status} /></div>
+                {metric.status === 'not_estimable' ? (
+                  <p className="mt-2 text-[14px]">Not estimable is distinct from zero impact.</p>
+                ) : (
+                  <p className="mt-2 text-[24px] tabular-nums">{format(metric.value, 4)} <span className="text-[14px]">{metric.unit}</span></p>
+                )}
+                {metric.reason ? <p className="mt-2 text-[14px]">{metric.reason}</p> : null}
+                {metric.required_evidence?.length ? (
+                  <ul className="mt-2 list-disc pl-5 text-[14px]">{metric.required_evidence.map((item) => <li key={item}>{item}</li>)}</ul>
+                ) : null}
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
+      <section className={`flex flex-col gap-2 p-6 ${CARD_CLASS}`}>
+        <h2 className="text-[18px] font-semibold">Scenario boundary</h2>
+        <PublicFields fields={snapshot.boundary} />
+      </section>
+      {(['energy', 'carbon', 'economics'] as const).map((section) => snapshot[section] ? (
+        <section key={section} className={`flex flex-col gap-2 p-6 ${CARD_CLASS}`}>
+          <h2 className="text-[18px] font-semibold">{label(section)}</h2>
+          <PublicFields fields={snapshot[section] as Record<string, PublicValue>} />
+        </section>
+      ) : null)}
+      <LimitationsCard snapshot={snapshot} />
+    </>
+  );
 }
 
 export default function PublishedReportPage() {
-  const { slug } = useParams<{ slug: string }>();
-  const report = useQuery({
-    queryKey: ['published-report', slug], retry: false, staleTime: Infinity,
-    queryFn: async (): Promise<PublishedReport> => {
-      if (!slug || slug.length > 100 || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) throw new ApiError(404, 'publication_not_found', 'This published report is unavailable.');
-      const response = await fetch(`/api/v1/public/reports/${encodeURIComponent(slug)}`, { credentials: 'omit', headers: { Accept: 'application/json' } });
-      if (!response.ok) throw new ApiError(response.status, 'public_report_failed', response.status === 404 ? 'This published report is unavailable.' : 'The published report could not be loaded.');
-      return response.json() as Promise<PublishedReport>;
-    },
+  const { slug = '' } = useParams<{ slug: string }>();
+  const valid = slug.length <= 100 && SLUG.test(slug);
+  const [download, setDownload] = useState<'pdf' | 'csv' | null>(null);
+  const result = useQuery({
+    queryKey: ['published-report', slug],
+    queryFn: () => getPublicReport(slug),
+    enabled: valid,
+    retry: false,
   });
-  const data = report.data;
-  const snapshot = data?.snapshot_data;
-  return <div className="min-h-screen bg-pv-bg text-pv-ink">
-    <header className="border-b border-pv-divider bg-white px-6 py-5"><p className="mx-auto max-w-5xl text-lg font-semibold text-pv-teal">Pax Virentia · Published report</p></header>
-    <main className="mx-auto flex max-w-5xl flex-col gap-6 px-4 py-8 sm:px-6">
-      {report.isPending && <SectionCard><h1 className="text-2xl font-semibold">Published scenario report</h1><p role="status">Loading the public snapshot…</p></SectionCard>}
-      {report.isError && <SectionCard><h1 className="text-2xl font-semibold">{report.error instanceof ApiError && report.error.status === 404 ? 'Report unavailable' : 'Could not load report'}</h1>
-        <p role="alert">{errorMessage(report.error)}</p><button type="button" onClick={() => { void report.refetch(); }} className={btnSecondary + ' self-start'}>Retry loading</button>
-      </SectionCard>}
-      {data && <>
-        <div><h1 className="break-words text-[28px] font-semibold">{data.title}</h1><p className="mt-3 whitespace-pre-wrap break-words">{data.summary}</p>
-          {data.published_at && <p className="mt-2 text-sm text-pv-muted">Published <time dateTime={data.published_at}>{data.published_at}</time></p>}
-        </div>
-        {snapshot?.boundary && <SectionCard><h2 className="text-lg font-semibold">Scenario boundary</h2><PublicFields fields={snapshot.boundary} /></SectionCard>}
-        {!!snapshot?.metrics?.length && <SectionCard><h2 className="text-lg font-semibold">Published metrics</h2><div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          {snapshot.metrics.map(metric => <article key={metric.key} className="rounded-xl border border-pv-divider p-4"><h3 className="font-semibold">{label(metric.key)}</h3>
-            <div className="mt-3"><StatusBadge status={metric.status} /></div>
-            {metric.status === 'not_estimable' ? <p className="mt-2 text-sm">Not estimable is distinct from zero impact.</p> : <p className="mt-2 text-2xl tabular-nums">{format(metric.value, 4)} <span className="text-sm">{metric.unit}</span></p>}
-            {metric.reason && <p className="mt-2 text-sm">{metric.reason}</p>}
-            {!!metric.required_evidence?.length && <ul className="mt-2 list-disc pl-5 text-sm">{metric.required_evidence.map(item => <li key={item}>{item}</li>)}</ul>}
-          </article>)}
-        </div></SectionCard>}
-        {(['energy', 'carbon', 'economics'] as const).map(section => snapshot?.[section] && <SectionCard key={section}><h2 className="text-lg font-semibold">{label(section)}</h2><PublicFields fields={snapshot[section]!} /></SectionCard>)}
-        {snapshot?.ecology && <SectionCard><h2 className="text-lg font-semibold">Ecological evidence gate</h2><StatusBadge status={snapshot.ecology.status} />
-          {snapshot.ecology.status === 'not_estimable' ? <p>Not estimable is distinct from zero impact and does not establish ecological safety.</p> : <p>{format(snapshot.ecology.value, 4)} {snapshot.ecology.unit}</p>}
-          {snapshot.ecology.reason && <p>{snapshot.ecology.reason}</p>}
-          {!!snapshot.ecology.required_evidence?.length && <><h3 className="font-semibold">Required evidence</h3><ul className="list-disc space-y-1 pl-5 text-sm">{snapshot.ecology.required_evidence.map(item => <li key={item}>{item}</li>)}</ul></>}
-        </SectionCard>}
-        {snapshot?.provenance && <SectionCard><h2 className="text-lg font-semibold">Published evidence boundaries</h2><PublicFields fields={snapshot.provenance} /></SectionCard>}
-        {!!snapshot?.limitations?.length && <SectionCard><h2 className="text-lg font-semibold">Limitations</h2><ul className="list-disc space-y-2 pl-5 text-sm">{snapshot.limitations.map(item => <li key={item}>{item}</li>)}</ul></SectionCard>}
-        {!snapshot && <p role="status">This report has no published numerical snapshot.</p>}
-      </>}
-    </main>
-  </div>;
+
+  if (!valid || result.data?.state === 'missing') return <PublicReportUnavailablePage />;
+  if (result.data?.state === 'withdrawn') return <PublicReportUnavailablePage tombstone={result.data.tombstone} />;
+  const report = result.data?.state === 'published' ? result.data.report : null;
+
+  return (
+    <div className="min-h-screen bg-pv-page font-inter text-pv-ink">
+      <PublicHeader active="Reports & methodology" />
+      <main className="mx-auto flex w-full max-w-[1264px] flex-col gap-6 px-6 pb-12 pt-8 lg:px-8">
+        <LoadState query={result}>
+          {report ? (
+            <>
+              <div className="flex flex-col gap-3">
+                <span className="inline-flex h-6 w-fit items-center rounded-full bg-pv-info-bg px-2 text-[12px] font-medium leading-4 text-pv-info">
+                  Simulated estimate · reviewed snapshot · not a regulatory approval
+                </span>
+                <h1 className="break-words text-[28px] font-semibold leading-9">{report.title}</h1>
+                {report.summary ? <p className="max-w-[760px] whitespace-pre-wrap break-words text-[14px] leading-5">{report.summary}</p> : null}
+                <p className="text-[12px] text-pv-ink-light">
+                  Published <time dateTime={report.published_at}>{publishedOn(report.published_at)}</time>
+                  {report.snapshot_data ? ` · ${boundaryText(report.snapshot_data)}` : ''}
+                </p>
+                <div className="flex flex-wrap gap-4">
+                  <button type="button" className={PRIMARY_BTN} onClick={() => setDownload('pdf')}>Download PDF</button>
+                  <button type="button" className={OUTLINE_BTN} onClick={() => setDownload('csv')}>Download CSV</button>
+                </div>
+              </div>
+              {report.snapshot_data ? <SnapshotSections snapshot={report.snapshot_data} />
+                : <p role="status">This report has no published numerical snapshot.</p>}
+            </>
+          ) : null}
+        </LoadState>
+      </main>
+      <PublicFooter />
+      {download && report ? (
+        <DownloadConfirmDialog
+          path={publicDownloadPath(report.slug, download)}
+          fileName={`${report.slug}.${download}`}
+          onClose={() => setDownload(null)}
+        />
+      ) : null}
+    </div>
+  );
 }

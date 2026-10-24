@@ -2,13 +2,11 @@ import { Link } from 'react-router-dom';
 import logoPaxVirentia from '../../assets/pv/logo-pax-virentia.png';
 import iconUtilitySignin from '../../assets/pv/icon-utility-signin.svg';
 
-/** Portal navigation. Items with a real route are internal links; the rest
- *  stay '#' placeholders until the matching public pages are built. */
+/** Portal navigation; every item is backed by reviewed publications. */
 const NAV_ITEMS = [
   { label: 'Overview', to: '/public/overview' },
   { label: 'Environmental impacts', to: '/public/impacts' },
   { label: 'Scenarios', to: '/public/scenarios' },
-  { label: 'Recommendations', to: '/public/recommendations' },
   { label: 'Reports & methodology', to: '/public/reports' },
 ];
 

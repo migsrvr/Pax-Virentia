@@ -2,7 +2,8 @@ import { NavLink } from 'react-router-dom';
 import {
   BookOpen,
   ChartColumn,
-  ChevronDown,
+  ClipboardCheck,
+  Database,
   ExternalLink,
   FileText,
   GitCompareArrows,
@@ -13,26 +14,39 @@ import {
   SlidersHorizontal,
 } from 'lucide-react';
 import clsx from 'clsx';
+import { useAuth } from '../../services/auth';
+import { canReview } from '../../services/roles';
 
-const WORKSPACE_NAV = [
+type NavEntry = {
+  to: string;
+  label: string;
+  icon: typeof BookOpen;
+  end?: boolean;
+  external?: boolean;
+};
+
+const WORKSPACE_NAV: NavEntry[] = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
+  { to: '/datasets', label: 'Datasets', icon: Database },
   { to: '/scenarios', label: 'Simulations', icon: SlidersHorizontal },
   { to: '/results', label: 'Results', icon: ChartColumn },
   { to: '/compare', label: 'Compare', icon: GitCompareArrows },
-  { to: '/recommendations', label: 'Recommendations', icon: Lightbulb, badge: '6' },
+  { to: '/recommendations', label: 'Comparison insights', icon: Lightbulb },
   { to: '/reports', label: 'Reports', icon: FileText },
 ];
 
-const REFERENCE_NAV = [
+const REVIEW_NAV: NavEntry[] = [{ to: '/reviews', label: 'Publication reviews', icon: ClipboardCheck }];
+
+const REFERENCE_NAV: NavEntry[] = [
   { to: '/methodology', label: 'Methodology', icon: BookOpen },
-  { to: '/public/snapshot', label: 'Public portal', icon: Globe, external: true },
+  { to: '/public/home', label: 'Public portal', icon: Globe, external: true },
 ];
 
-function NavItem({ item }: { item: (typeof WORKSPACE_NAV)[number] & { external?: boolean } }) {
+function NavItem({ item }: { item: NavEntry }) {
   return (
     <NavLink
       to={item.to}
-      end={'end' in item ? item.end : undefined}
+      end={item.end}
       target={item.external ? '_blank' : undefined}
       rel={item.external ? 'noreferrer' : undefined}
       className={({ isActive }) =>
@@ -52,16 +66,6 @@ function NavItem({ item }: { item: (typeof WORKSPACE_NAV)[number] & { external?:
             aria-hidden="true"
           />
           <span className="truncate">{item.label}</span>
-          {'badge' in item && item.badge ? (
-            <span
-              className={clsx(
-                'ml-auto inline-flex h-5 min-w-6 items-center justify-center rounded-full px-2 text-xs font-medium text-pv-mint',
-                isActive ? 'bg-pv-forest' : 'bg-pv-pine-border',
-              )}
-            >
-              {item.badge}
-            </span>
-          ) : null}
           {item.external ? (
             <ExternalLink size={16} className="ml-auto shrink-0 text-pv-side-muted" aria-hidden="true" />
           ) : null}
@@ -72,6 +76,7 @@ function NavItem({ item }: { item: (typeof WORKSPACE_NAV)[number] & { external?:
 }
 
 export default function Sidebar() {
+  const { user } = useAuth();
   return (
     <aside className="hidden h-full w-[240px] shrink-0 flex-col bg-pv-forest lg:flex">
       <nav aria-label="Workspace" className="flex flex-1 flex-col gap-1 overflow-y-auto p-4 py-6">
@@ -82,13 +87,21 @@ export default function Sidebar() {
               Sample WTP · Luzon–Visayas
             </div>
           </div>
-          <ChevronDown size={16} className="shrink-0 text-pv-side-muted" aria-hidden="true" />
         </div>
 
         <div className="px-3 pb-1 pt-4 text-xs font-medium leading-4 text-pv-side-muted">Workspace</div>
         {WORKSPACE_NAV.map((item) => (
           <NavItem key={item.to} item={item} />
         ))}
+
+        {canReview(user) ? (
+          <>
+            <div className="px-3 pb-1 pt-5 text-xs font-medium leading-4 text-pv-side-muted">Review</div>
+            {REVIEW_NAV.map((item) => (
+              <NavItem key={item.to} item={item} />
+            ))}
+          </>
+        ) : null}
 
         <div className="px-3 pb-1 pt-5 text-xs font-medium leading-4 text-pv-side-muted">Reference</div>
         {REFERENCE_NAV.map((item) => (

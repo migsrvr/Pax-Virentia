@@ -117,7 +117,9 @@ that cannot build locally.
 
 ### 3.1 Deploy the backend to Render
 
-#### Option A — Blueprint from `render.yaml` (recommended)
+#### Option A — Blueprint from `render.yaml` (recommended when present)
+
+If the deployed branch does not contain `render.yaml`, use Option B.
 
 1. Commit and push the deployment files to the branch you intend to deploy.
 2. Open the [Render Dashboard](https://dashboard.render.com/) and choose **New + → Blueprint**.
@@ -177,8 +179,11 @@ services:
 ```
 
 > If the repository's `render.yaml` already exists, treat the snippet above as the expected shape
-> rather than replacing unrelated settings blindly. Keep the approved region and plan for the
-> project.
+> rather than replacing unrelated settings blindly. The checked-in Blueprint may omit `region`,
+> session overrides, and seed display variables; the application defaults then apply. Add
+> `region: singapore` (or choose the closest region in the dashboard) when the database is in
+> Supabase `ap-southeast-2`, and add the session or seed variables only when you intend to override
+> their defaults.
 
 #### Option B — Manual Web Service
 
@@ -207,8 +212,8 @@ The start command is two steps joined by `&&`:
 
 ```text
 python -m app.bootstrap
-  → creates missing tables (idempotent DDL)
-  → provisions the configured seed analyst and the sample analyst account
+  → applies Alembic migrations (alembic upgrade head; idempotent; adopts pre-migration databases)
+  → provisions the configured seed account if it is absent
 uvicorn app.main:app --host 0.0.0.0 --port $PORT
   → starts the API
   → starts the embedded worker thread when ENABLE_EMBEDDED_WORKER=true
@@ -219,12 +224,26 @@ exists; changing `SEED_USER_PASSWORD` after the first deploy does not change the
 Because bootstrap runs on every deploy, the database URL must support the DDL and must remain
 reachable during startup. See [§6.4](#64-supabase-connection-pooler-port-5432-vs-6543).
 
+**First deploy after the publication-review change (migration `0002`).** Existing publications were
+never reviewed, so they are backfilled as `pending_review` and disappear from the public site until a
+reviewer approves them. Before or right after that deploy, provision at least one reviewer (from a
+Render shell in `backend/`, or locally with the production `DATABASE_URL`):
+
+```bash
+python -m app.bootstrap create-user --email reviewer@example.org --role reviewer --name "Reviewer"
+```
+
+The password comes from `--password`, `PV_NEW_USER_PASSWORD`, or a prompt. Reviewers cannot approve
+their own submissions, so a solo operator needs one analyst and one reviewer account. Keep
+`SECRET_KEY` stable: CSRF tokens are derived from it, and changing it forces every open tab to
+refresh its token.
+
 #### Obtain the live API URL
 
 When the deploy reports **Live**, copy the service URL from the Render dashboard, for example:
 
 ```text
-https://pax-virentia-api.onrender.com
+https://pax-virentia.onrender.com
 ```
 
 Keep this URL; it is the rewrite destination in `apps/web/vercel.json`. Do not append `/api` to the
@@ -233,7 +252,7 @@ base URL when recording it.
 #### Verify `/health`
 
 ```bash
-curl -fsS https://pax-virentia-api.onrender.com/health
+curl -fsS https://pax-virentia.onrender.com/health
 ```
 
 Expected response:
@@ -246,7 +265,7 @@ If the first request times out on a free instance, see [§6.3](#63-render-cold-s
 Also verify OpenAPI:
 
 ```bash
-curl -fsS https://pax-virentia-api.onrender.com/api/v1/openapi.json > /dev/null \
+curl -fsS https://pax-virentia.onrender.com/api/v1/openapi.json > /dev/null \
   && echo "OpenAPI reachable"
 ```
 
@@ -258,8 +277,9 @@ chat.
 
 #### Set the API rewrite
 
-Edit `apps/web/vercel.json` and replace the placeholder host with the Render URL captured in
-§3.1:
+Edit `apps/web/vercel.json` and replace the destination host with the Render URL captured in §3.1.
+The checked-in file currently points at `https://pax-virentia.onrender.com`; it must match
+the actual Render service name.
 
 ```json
 {
@@ -267,7 +287,7 @@ Edit `apps/web/vercel.json` and replace the placeholder host with the Render URL
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://pax-virentia-api.onrender.com/api/:path*"
+      "destination": "https://pax-virentia.onrender.com/api/:path*"
     },
     {
       "source": "/(.*)",
@@ -421,9 +441,8 @@ do not ship a production `.env` file.
 | `VITE_API_BASE_URL` | No | `/api/v1` | Public | Optional public API base if the frontend build supports it. Keep it relative for the same-origin proxy. Pointing it at `https://<service>.onrender.com/api/v1` breaks the cookie model. |
 | Any other `VITE_*` value | No | non-secret build metadata | **Public** | Vite embeds `VITE_*` values in the browser bundle. Never put `GEMINI_API_KEY`, `DATABASE_URL`, `SECRET_KEY`, Supabase service-role keys, or session secrets here. |
 
-The current `apps/web/src/services/api.ts` calls the relative `/api/v1` path directly. If the
-optional base variable is not implemented in the deployed revision, do not set it; the relative
-path is already correct for this topology.
+The current `apps/web/src/services/api.ts` uses `VITE_API_BASE_URL` when present, otherwise the
+relative `/api/v1` path. Leave it unset for this topology; the relative path is already correct.
 
 ### 4.3 Platform build settings (not application variables)
 
@@ -458,9 +477,8 @@ Vercel origin. Record the date, deployment IDs, run ID, and public report slug w
 ### 5.2 Analyst login
 
 1. Open `https://<app>.vercel.app/login`.
-2. Sign in with `SEED_USER_EMAIL` and `SEED_USER_PASSWORD` configured on Render. Bootstrap also
-   creates `ana.santos@example.com` with the development default password; treat that account as a
-   demo convenience, not a production identity.
+2. Sign in with `SEED_USER_EMAIL` and `SEED_USER_PASSWORD` configured on Render. Bootstrap creates
+   only that seed account; add reviewers with `python -m app.bootstrap create-user`.
 3. Confirm the dashboard loads and the browser has a `__Host-pv_session` cookie under the Vercel
    host. In browser devtools, check **Application → Cookies**; the value is opaque and must not be
    copied into a report.
@@ -545,27 +563,36 @@ Sample arithmetic for the smoke inputs (illustrative; the API is authoritative):
 If the key is missing or the provider is unavailable, the fallback is the expected behavior, not a
 failed deployment. See [§6.7](#67-ai-explanations-fail-or-always-use-the-template).
 
-### 5.7 Publish a public report
+### 5.7 Submit, review and publish a public report
 
-1. In the **Publish report** card on the Results page, optionally enter a public summary.
-2. Click **Publish report**.
-3. Confirm the success message includes a slug and a **View public report** link.
-4. Open the link. The public path is `/public/reports/<slug>`; the API path is
-   `/api/v1/public/reports/<slug>`.
-5. Open the same URL in a private/incognito window. It must load without a session and without
-   exposing drafts, raw uploads, internal notes, or unpublished runs.
-6. Confirm the public snapshot includes limitations and shows `not_estimable` ecology as such.
+1. As the analyst, open the **Public snapshot** card on the Results page, optionally enter a public
+   summary, and click **Submit for review**. The status shows **Awaiting review**.
+2. In a private window, open `https://<app>.vercel.app/public/reports` — the report must **not** be
+   listed yet, and `/public/reports/<slug>` must say it isn't available.
+3. Sign in as a reviewer, open **Publication reviews** (`/reviews`), preview the public payload and
+   **Approve and publish**. (Rejecting requires a reason, which the analyst sees.)
+4. The report now appears on `/public/reports` and loads at `/public/reports/<slug>` without a
+   session, with limitations and `not_estimable` ecology shown as such. Download its PDF and CSV.
+5. As the reviewer, **Withdraw** it with a reason. `/public/reports/<slug>` must show the withdrawal
+   notice and no figures; the API returns `410 publication_withdrawn`.
+6. Re-submit and approve a fresh snapshot if you want the report public again.
 
-Publication is a reviewed snapshot, not regulatory approval. Withdraw or fix misleading public
-content through the approved process for the deployed revision.
+Publication is a reviewed snapshot, not regulatory approval. Every transition is stored in
+`audit_events`.
 
-### 5.8 Sign-out and session hygiene
+### 5.8 Returning-session check
+
+1. Sign in with **Remember me**, fully close the browser, reopen the site.
+2. Save a scenario and start a run. Both must succeed (no `403 csrf_rejected`), because
+   `/auth/session` re-issues the session's CSRF token. Repeat in a new tab.
+
+### 5.9 Sign-out and session hygiene
 
 1. Use the **Sign out** control in the workspace header.
 2. Confirm `/api/v1/auth/session` returns `401` and the cookie is cleared.
 3. Confirm the browser cannot reach private routes after sign-out.
 
-### 5.9 Smoke-test record
+### 5.10 Smoke-test record
 
 | Item | Result |
 | --- | --- |
@@ -621,7 +648,7 @@ CORS failure; the request reaches Render and is rejected by the origin/CSRF guar
    curl -i -H "Origin: https://pax-virentia.vercel.app" \
      -H "Content-Type: application/json" \
      -d '{"email":"rivera.dev.miggy@gmail.com","password":"<SEED_USER_PASSWORD>"}' \
-     https://pax-virentia-api.onrender.com/api/v1/auth/login
+     https://pax-virentia.onrender.com/api/v1/auth/login
    ```
 
 Do not "fix" the issue by setting `ALLOWED_ORIGINS` to `*`, by disabling the origin check, or by
@@ -646,7 +673,7 @@ invalid for that mode and unsafe.
 | Third-party cookie blocking | Request is cross-site (`app.vercel.app` → `api.onrender.com`) | Make requests same-origin through the proxy. `SameSite=Lax` is correct for the proxied same-site flow. Do not switch to `SameSite=None` as a substitute for the proxy. |
 | Proxy does not forward `Set-Cookie` | Render response has `Set-Cookie`; browser response does not | Verify the Vercel rewrite is an external proxy rewrite and that no response header stripping is in place. |
 | Plain HTTP or an IP-based local test | URL is `http://` in production | Use HTTPS. `__Host-` cookies are Secure-only by definition. |
-| Cookie was cleared between login and the next call | React state has a user but sessionStorage lost the CSRF token | Reload once and sign in again. CSRF tokens are held in `sessionStorage`; an incognito window or storage clear drops them. |
+| CSRF token lost (browser restart, new tab, cleared storage) | A write first gets `403 csrf_rejected` | Handled automatically: the client calls `/auth/session`, which re-derives the token from the session cookie, and retries once. A persistent `403` means an untrusted `Origin` or a changed `SECRET_KEY`. |
 
 Verify the response header:
 
@@ -826,7 +853,8 @@ service sleeps.
 | Rotate the Gemini key | Update Render `GEMINI_API_KEY`; redeploy; request an explanation and check the source. |
 | Rotate the database password | Rotate in Supabase, update `DATABASE_URL` on Render, redeploy, and re-run health/login. |
 | Roll back | Use Render's previous deploy and Vercel's instant rollback. Roll back the frontend and backend in a compatible pair; database changes must remain backward compatible. |
-| Change the database schema | Do not rely on bootstrap for destructive changes. Apply a reviewed migration, then deploy code that tolerates both old and new columns during the transition. |
+| Change the database schema | Add a forward-only Alembic revision under `backend/app/migrations/versions/`; bootstrap applies it on the next start (`alembic current` shows the revision). For destructive changes, use expand/contract: deploy code that tolerates both old and new columns first. Test the revision on a copy of production data before deploying. |
+| Add a reviewer or administrator | `python -m app.bootstrap create-user --email … --role reviewer\|administrator` with the production `DATABASE_URL`. |
 | Monitor | Use Render logs and health checks; Vercel deployment logs for build/runtime proxy issues. Include the API `X-Request-ID` in incident notes. |
 | Back up | Use Supabase backups/PITR according to the project plan. Bootstrap is not a backup. |
 
@@ -843,7 +871,10 @@ service sleeps.
       `https://*.vercel.app` wildcard with its broader trust documented.
 - [ ] The frontend uses the same-origin `/api/v1` proxy; no direct browser-to-Render API base.
 - [ ] HTTPS is enforced on both hosts.
-- [ ] Public report pages expose only published, redacted snapshots.
+- [ ] Public report pages expose only published, redacted snapshots; pending and rejected
+      snapshots return 404 and withdrawn ones 410.
+- [ ] At least one reviewer account exists, separate from the analyst who submits snapshots.
+- [ ] `SECRET_KEY` is set once and kept stable across deploys.
 - [ ] Anyone with deployment access can rotate the database and Gemini credentials.
 - [ ] Supabase connection limits are respected across all Render instances.
 - [ ] Logs do not contain passwords, cookies, CSRF tokens, connection strings, or provider payloads.

@@ -1,4 +1,4 @@
-import { BrowserRouter, Route, Routes } from 'react-router-dom';
+import { BrowserRouter, Navigate, Route, Routes, useParams } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import AppLayout from './components/layout/AppLayout';
 import ScrollToTop from './components/common/ScrollToTop';
@@ -9,23 +9,27 @@ import ResultsPage from './pages/ResultsPage';
 import ComparePage from './pages/ComparePage';
 import RecommendationsPage from './pages/RecommendationsPage';
 import ReportsPage from './pages/ReportsPage';
+import ReviewQueuePage from './pages/ReviewQueuePage';
+import SearchPage from './pages/SearchPage';
 import MethodologyPage from './pages/MethodologyPage';
 import SettingsPage from './pages/SettingsPage';
 import PublicDashboardPage from './pages/PublicDashboardPage';
 import PublicImpactsPage from './pages/PublicImpactsPage';
 import PublicLandingPage from './pages/PublicLandingPage';
-import PublicRecommendationsPage from './pages/PublicRecommendationsPage';
-import PublicReportDetailPage from './pages/PublicReportDetailPage';
-import PublicReportUnavailablePage from './pages/PublicReportUnavailablePage';
 import PublicReportsPage from './pages/PublicReportsPage';
 import PublicScenariosPage from './pages/PublicScenariosPage';
-import PublicSnapshotPage from './pages/PublicSnapshotPage';
 import PublishedReportPage from './pages/PublishedReportPage';
 import LoginPage from './pages/LoginPage';
 import NotFoundPage from './pages/NotFoundPage';
 import { AuthProvider, RequireAuth } from './services/auth';
 
 const queryClient = new QueryClient();
+
+/** Older public links used /public/:id; every public report now lives under /public/reports/:slug. */
+function LegacyPublicLink() {
+  const { id = '' } = useParams<{ id: string }>();
+  return <Navigate to={`/public/reports/${encodeURIComponent(id)}`} replace />;
+}
 
 export default function App() {
   return (
@@ -34,17 +38,15 @@ export default function App() {
         <AuthProvider>
           <ScrollToTop />
           <Routes>
-            {/* Public — no workspace chrome */}
+            {/* Public — no workspace chrome; every page reads reviewed publications only */}
+            <Route path="/public" element={<Navigate to="/public/home" replace />} />
+            <Route path="/public/home" element={<PublicLandingPage />} />
             <Route path="/public/overview" element={<PublicDashboardPage />} />
             <Route path="/public/impacts" element={<PublicImpactsPage />} />
             <Route path="/public/scenarios" element={<PublicScenariosPage />} />
-            <Route path="/public/recommendations" element={<PublicRecommendationsPage />} />
             <Route path="/public/reports" element={<PublicReportsPage />} />
-            <Route path="/public/reports/scenario-analysis-jan-2026" element={<PublicReportDetailPage />} />
-            <Route path="/public/reports/december-2025-snapshot-ps-003" element={<PublicReportUnavailablePage />} />
             <Route path="/public/reports/:slug" element={<PublishedReportPage />} />
-            <Route path="/public/home" element={<PublicLandingPage />} />
-            <Route path="/public/:id" element={<PublicSnapshotPage />} />
+            <Route path="/public/:id" element={<LegacyPublicLink />} />
             <Route path="/login" element={<LoginPage />} />
 
             {/* Private workspace */}
@@ -62,6 +64,8 @@ export default function App() {
               <Route path="/compare" element={<ComparePage />} />
               <Route path="/recommendations" element={<RecommendationsPage />} />
               <Route path="/reports" element={<ReportsPage />} />
+              <Route path="/reviews" element={<ReviewQueuePage />} />
+              <Route path="/search" element={<SearchPage />} />
               <Route path="/methodology" element={<MethodologyPage />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="*" element={<NotFoundPage />} />

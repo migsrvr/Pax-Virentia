@@ -121,8 +121,35 @@ class MilestoneHTTPContracts(RepositoryFixture, unittest.TestCase):
     def explain(self, run_id, **kwargs):
         return self.client.post(f"/api/v1/runs/{run_id}/explain", headers=self.headers, **kwargs)
 
-    def publish(self, run_id, **kwargs):
-        return self.client.post(f"/api/v1/runs/{run_id}/publish", headers=self.headers, **kwargs)
+    def publish(self, run_id, json=None):
+        return self.client.post("/api/v1/publications", headers=self.headers,
+                                json={"run_id": str(run_id), **(json or {})})
+
+    def reviewer(self):
+        if not hasattr(self, "_reviewer"):
+            reviewer_id = str(uuid4())
+            self.repository.create_user(reviewer_id, "reviewer", email="reviewer@example.com",
+                                        display_name="Private Reviewer")
+            token, csrf = self.repository.create_session(reviewer_id)
+            self._reviewer = (reviewer_id, token, csrf)
+        return self._reviewer
+
+    def review(self, publication_id, action="approve", reason=None):
+        _, token, csrf = self.reviewer()
+        self.client.cookies.set("__Host-pv_session", token)
+        try:
+            return self.client.post(f"/api/v1/publications/{publication_id}/{action}",
+                                    headers={**self.headers, "X-CSRF-Token": csrf},
+                                    json={"reason": reason} if reason else None)
+        finally:
+            self.client.cookies.set("__Host-pv_session", self.token)
+
+    def publish_approved(self, run_id, json=None):
+        created = self.publish(run_id, json)
+        self.assertEqual(created.status_code, 201, created.text)
+        approved = self.review(created.json()["id"])
+        self.assertEqual(approved.status_code, 200, approved.text)
+        return created
 
     def test_explanation_can_omit_body_and_get_returns_persisted_structured_output(self):
         run_id = self.completed()
@@ -153,16 +180,17 @@ class MilestoneHTTPContracts(RepositoryFixture, unittest.TestCase):
         self.client.cookies.clear()
         for path in ("/api/v1/runs", f"/api/v1/runs/{run_id}/explain"):
             self.assertEqual(self.client.get(path).status_code, 401)
-        for path in (f"/api/v1/runs/{run_id}/explain", f"/api/v1/runs/{run_id}/publish"):
-            self.assertEqual(self.client.post(path, headers=self.headers).status_code, 401)
+        writes = ((f"/api/v1/runs/{run_id}/explain", None), ("/api/v1/publications", {"run_id": run_id}))
+        for path, body in writes:
+            self.assertEqual(self.client.post(path, headers=self.headers, json=body).status_code, 401)
         self.client.cookies.set("__Host-pv_session", self.token)
-        for suffix in ("explain", "publish"):
-            path = f"/api/v1/runs/{run_id}/{suffix}"
-            self.assertEqual(self.client.post(path).status_code, 403)
-            self.assertEqual(self.client.post(path, headers={**self.headers, "X-CSRF-Token": "wrong"}).status_code, 403)
-            self.assertEqual(self.client.post(path, headers={**self.headers, "Origin": "https://evil.example"}).status_code, 403)
+        for path, body in writes:
+            self.assertEqual(self.client.post(path, json=body).status_code, 403)
+            self.assertEqual(self.client.post(path, json=body, headers={**self.headers, "X-CSRF-Token": "wrong"}).status_code, 403)
+            self.assertEqual(self.client.post(path, json=body, headers={**self.headers, "Origin": "https://evil.example"}).status_code, 403)
         self.repository.create_user(self.user_id, "reviewer")
         self.assertEqual(self.explain(run_id).status_code, 403)
+        # Reviewers decide on submissions; they cannot submit their own.
         self.assertEqual(self.publish(run_id).status_code, 403)
         self.assertEqual(self.client.get("/api/v1/runs").status_code, 200)
 
@@ -201,8 +229,17 @@ class MilestoneHTTPContracts(RepositoryFixture, unittest.TestCase):
         results = deepcopy(self.repository.get_results(run_id))
         created = self.publish(run_id, json={"title": "Reviewed scenario", "summary": "Selected calculations.", "slug": "reviewed-scenario"})
         self.assertEqual(created.status_code, 201, created.text)
-        self.assertEqual(created.headers["location"], "/api/v1/public/reports/reviewed-scenario")
         publication = created.json()
+        self.assertEqual(created.headers["location"], f"/api/v1/publications/{publication['id']}")
+        self.assertEqual(publication["status"], "pending_review")
+        self.assertIsNone(publication["published_at"])
+        public_path = "/api/v1/public/reports/reviewed-scenario"
+        # Submission alone is not publication.
+        self.assertEqual(self.client.get(public_path).status_code, 404)
+        self.assertEqual(self.client.get("/api/v1/public/reports").json()["items"], [])
+        approved = self.review(publication["id"])
+        self.assertEqual(approved.status_code, 200, approved.text)
+        self.assertEqual(approved.json()["status"], "published")
         snapshot = publication["snapshot_data"]
         self.assertEqual(snapshot["energy"]["total_kwh"], 100.0)
         self.assertEqual(snapshot["ecology"]["status"], "not_estimable")
@@ -212,28 +249,32 @@ class MilestoneHTTPContracts(RepositoryFixture, unittest.TestCase):
         self.assertIn(ECOLOGY_LIMITATION, snapshot["limitations"])
         self.assertEqual(snapshot["boundary"]["volume_m3"], 100.0)
         self.client.cookies.clear()
-        detail = self.client.get(created.headers["location"])
+        detail = self.client.get(public_path)
         self.assertEqual(detail.status_code, 200, detail.text)
         self.assertEqual(detail.json()["snapshot_data"], snapshot)
         page = self.client.get("/api/v1/public/reports?limit=1&offset=0")
         self.assertEqual(page.status_code, 200)
         self.assertEqual(page.json()["items"][0]["slug"], "reviewed-scenario")
-        for data in (publication, detail.json(), page.json()):
+        self.assertIn("private-technology-source", json.dumps(self.repository.get_run(run_id)))
+        reviewer_id = self.reviewer()[0]
+        for data in (snapshot, detail.json(), page.json()):
             encoded = json.dumps(data)
-            for private in (run_id, self.user_id, "private@example.com", "Private Analyst",
-                            "private-technology-source", "frozen_inputs", "source_ref", "published_by"):
+            for private in (run_id, self.user_id, reviewer_id, publication["id"], "private@example.com",
+                            "Private Analyst", "Private Reviewer", "private-technology-source", "frozen_inputs",
+                            "source_ref", "submitted_by", "reviewed_by", "pending_review"):
                 self.assertNotIn(private, encoded)
         self.service.create_revision(self.repository.get_revision(self.repository.get_run(run_id)["scenario_revision_id"])["scenario_id"],
                                      scenario_parameters(chemical_dose_mg_per_l=5), self.user_id)
-        self.assertEqual(self.client.get(created.headers["location"]).json()["snapshot_data"], snapshot)
+        self.assertEqual(self.client.get(public_path).json()["snapshot_data"], snapshot)
         self.assertEqual(self.repository.get_results(run_id), results)
 
     def test_public_reads_remove_legacy_extra_data(self):
         run_id = self.completed()
-        self.repository.create_publication(run_id, "legacy-report", "Report", "Summary",
-                                           {"frozen_inputs": {"password": "private-secret"},
-                                            "provenance": {"dataset": "private-secret"},
-                                            "energy": {"total_kwh": 100.0, "private": "private-secret"}}, self.user_id)
+        legacy = self.repository.create_publication(run_id, "legacy-report", "Report", "Summary",
+                                                    {"frozen_inputs": {"password": "private-secret"},
+                                                     "provenance": {"dataset": "private-secret"},
+                                                     "energy": {"total_kwh": 100.0, "private": "private-secret"}}, self.user_id)
+        self.repository.transition_publication(legacy["id"], "approve", self.reviewer()[0])
         self.client.cookies.clear()
         response = self.client.get("/api/v1/public/reports/legacy-report")
         self.assertEqual(response.status_code, 200, response.text)
@@ -271,10 +312,14 @@ class MilestoneHTTPContracts(RepositoryFixture, unittest.TestCase):
 
     def test_publish_slug_generation_duplicate_and_safe_text_validation(self):
         run_id = self.completed()
-        first, second = self.publish(run_id), self.publish(run_id)
-        self.assertEqual(first.status_code, 201, first.text)
+        first = self.publish_approved(run_id)
+        second = self.publish(run_id)
         self.assertEqual(second.status_code, 201, second.text)
         self.assertNotEqual(first.json()["slug"], second.json()["slug"])
+        # One pending submission per run at a time.
+        pending = self.publish(run_id)
+        self.assertEqual(pending.status_code, 409, pending.text)
+        self.assertEqual(pending.json()["error"]["code"], "publication_already_pending")
         self.assertEqual(self.publish(run_id, json={"slug": first.json()["slug"]}).status_code, 409)
         for body in ({"slug": "Not Safe"}, {"slug": "../escape"}, {"title": "<script>"},
                      {"summary": "unsafe\ntext"}, {"title": "   "}, {"snapshot_data": {}}):
@@ -288,7 +333,7 @@ class MilestoneHTTPContracts(RepositoryFixture, unittest.TestCase):
         run_id = self.completed()
         self.assertEqual(self.publish(run_id, json={"slug": "same-slug"}).status_code, 201)
         with patch("app.api.v1.publications._slug_exists", side_effect=[False, True]):
-            response = self.publish(run_id, json={"slug": "same-slug"})
+            response = self.publish(self.completed(), json={"slug": "same-slug"})
         self.assertEqual(response.status_code, 409, response.text)
         self.assertEqual(response.json()["error"]["code"], "publication_slug_conflict")
         self.assertEqual(len(self.repository.list_publications()["items"]), 1)

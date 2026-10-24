@@ -10,8 +10,9 @@ import hashlib
 import json
 import secrets
 import sqlite3
-from uuid import uuid4
+from uuid import UUID, uuid4
 
+from app.security import derive_csrf_token
 from app.services.errors import ServiceError
 
 
@@ -60,7 +61,9 @@ class _SQLConnection:
         for key, value in result.items():
             if isinstance(value, datetime):
                 result[key] = value.astimezone(timezone.utc).isoformat()
-            elif key.endswith("_id") or key == "id":
+            elif isinstance(value, UUID) or key.endswith("_id") or key == "id":
+                # PostgreSQL returns UUID objects for every UUID column (e.g. submitted_by,
+                # reviewed_by); ownership and self-review checks compare against strings.
                 result[key] = str(value) if value is not None else None
         return result
 
@@ -118,33 +121,37 @@ class SimulationRepository:
     def json_parameter(self, name):
         return f"CAST(:{name} AS JSONB)" if self.postgres else ":" + name
 
+    @contextmanager
+    def migration_connection(self):
+        """A SQLAlchemy connection on this store, for Alembic revisions."""
+        if self.postgres:
+            with self.engine.connect() as connection:
+                yield connection
+                connection.commit()
+            return
+        from sqlalchemy import create_engine
+        from sqlalchemy.pool import NullPool
+
+        def connect():
+            connection = sqlite3.connect(self.path, uri=self.uri, timeout=10, check_same_thread=False)
+            connection.execute("PRAGMA foreign_keys=ON")
+            return connection
+
+        engine = create_engine("sqlite://", creator=connect, poolclass=NullPool)
+        try:
+            with engine.connect() as connection:
+                yield connection
+                connection.commit()
+        finally:
+            engine.dispose()
+
     def create_schema(self):
-        """Explicit local/bootstrap helper; API startup never performs DDL."""
-        id_type = "UUID" if self.postgres else "TEXT"
-        json_type = "JSONB" if self.postgres else "TEXT"
-        timestamp = "TIMESTAMPTZ" if self.postgres else "TEXT"
-        binary = "BYTEA" if self.postgres else "BLOB"
-        statements = [
-            f"CREATE TABLE IF NOT EXISTS users (id {id_type} PRIMARY KEY, role TEXT NOT NULL CHECK(role IN ('analyst','reviewer','administrator')), email TEXT, password_hash TEXT, display_name TEXT, active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)))",
-            f"CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id {id_type} NOT NULL REFERENCES users(id), csrf_hash TEXT NOT NULL, expires_at {timestamp} NOT NULL, revoked INTEGER NOT NULL DEFAULT 0 CHECK(revoked IN (0,1)))",
-            f"CREATE TABLE IF NOT EXISTS scenarios (id {id_type} PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('baseline','intervention')), created_by {id_type} NOT NULL, created_at {timestamp} NOT NULL)",
-            f"CREATE TABLE IF NOT EXISTS scenario_revisions (id {id_type} PRIMARY KEY, scenario_id {id_type} NOT NULL REFERENCES scenarios(id), revision_no INTEGER NOT NULL CHECK(revision_no>0), parameters {json_type} NOT NULL, created_by {id_type} NOT NULL, created_at {timestamp} NOT NULL, UNIQUE(scenario_id,revision_no))",
-            f"CREATE TABLE IF NOT EXISTS simulation_runs (id {id_type} PRIMARY KEY, scenario_revision_id {id_type} NOT NULL REFERENCES scenario_revisions(id), frozen_inputs {json_type} NOT NULL, snapshot_hash TEXT NOT NULL, code_version TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('queued','running','succeeded','failed','cancelled')), submitted_by {id_type} NOT NULL, created_at {timestamp} NOT NULL, started_at {timestamp}, ended_at {timestamp}, error_code TEXT, error_message TEXT)",
-            f"CREATE TABLE IF NOT EXISTS run_results (run_id {id_type} PRIMARY KEY REFERENCES simulation_runs(id), payload {json_type} NOT NULL)",
-            f"CREATE TABLE IF NOT EXISTS jobs (id {id_type} PRIMARY KEY, run_id {id_type} NOT NULL UNIQUE REFERENCES simulation_runs(id), status TEXT NOT NULL CHECK(status IN ('queued','running','succeeded','failed','cancelled')), attempt_no INTEGER NOT NULL DEFAULT 0 CHECK(attempt_no>=0), available_at {timestamp} NOT NULL, lease_token TEXT, lease_until {timestamp}, cancel_requested INTEGER NOT NULL DEFAULT 0 CHECK(cancel_requested IN (0,1)), created_at {timestamp} NOT NULL)",
-            f"CREATE TABLE IF NOT EXISTS idempotency_keys (user_id {id_type} NOT NULL, endpoint TEXT NOT NULL, key TEXT NOT NULL, request_hash TEXT NOT NULL, run_id {id_type} NOT NULL REFERENCES simulation_runs(id), PRIMARY KEY(user_id,endpoint,key))",
-            f"CREATE TABLE IF NOT EXISTS dataset_versions (id {id_type} PRIMARY KEY, source_ref TEXT NOT NULL, evidence_status TEXT NOT NULL, content_hash TEXT NOT NULL, original_csv {binary} NOT NULL, quality_report {json_type} NOT NULL, schema_version TEXT NOT NULL, created_by {id_type} NOT NULL, created_at {timestamp} NOT NULL)",
-            f"CREATE TABLE IF NOT EXISTS publications (id {id_type} PRIMARY KEY, run_id {id_type} NOT NULL REFERENCES simulation_runs(id), slug TEXT UNIQUE NOT NULL, title TEXT NOT NULL, summary TEXT, snapshot_data {json_type} NOT NULL, published_by {id_type} NOT NULL REFERENCES users(id), published_at {timestamp} NOT NULL, view_count INTEGER NOT NULL DEFAULT 0)",
-            f"CREATE TABLE IF NOT EXISTS ai_explanations (id {id_type} PRIMARY KEY, run_id {id_type} NOT NULL REFERENCES simulation_runs(id), focus TEXT NOT NULL, narrative TEXT NOT NULL, key_drivers {json_type} NOT NULL, grounded_evidence {json_type} NOT NULL, generated_at {timestamp} NOT NULL, UNIQUE(run_id, focus))",
-            "CREATE INDEX IF NOT EXISTS jobs_ready_idx ON jobs(status, available_at)",
-            "CREATE INDEX IF NOT EXISTS runs_revision_idx ON simulation_runs(scenario_revision_id, created_at)",
-            "CREATE UNIQUE INDEX IF NOT EXISTS users_email_idx ON users(email)",
-            "CREATE INDEX IF NOT EXISTS publications_slug_idx ON publications(slug)",
-            "CREATE INDEX IF NOT EXISTS ai_explanations_run_idx ON ai_explanations(run_id)",
-        ]
-        with self.transaction() as connection:
-            for statement in statements:
-                connection.execute(statement)
+        """Explicit local/bootstrap helper; API startup never performs DDL.
+
+        Applies every Alembic revision, adopting pre-migration databases in place.
+        """
+        from app.repositories.migrations import upgrade
+        upgrade(self)
 
     def create_user(self, user_id, role, email=None, password_hash=None, display_name=None):
         """Provisioning hook; no public registration route is provided."""
@@ -161,7 +168,8 @@ class SimulationRepository:
                          {"email": email})
 
     def create_session(self, user_id, lifetime_hours=24):
-        token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
+        token = secrets.token_urlsafe(32)
+        csrf = derive_csrf_token(token)
         with self.transaction() as c:
             c.execute("INSERT INTO sessions(token_hash,user_id,csrf_hash,expires_at) VALUES(:token,:user,:csrf,:expires)",
                       {"token": hashlib.sha256(token.encode()).hexdigest(), "user": user_id,
@@ -173,6 +181,20 @@ class SimulationRepository:
         with self.transaction() as c:
             return c.one("SELECT s.user_id,s.csrf_hash,u.role,u.email,u.display_name FROM sessions s JOIN users u ON u.id=s.user_id WHERE token_hash=:token AND s.revoked=0 AND u.active=1 AND s.expires_at>:now",
                          {"token": hashlib.sha256(token.encode()).hexdigest(), "now": utc_now()})
+
+    def restore_csrf(self, token):
+        """Return the session's derived CSRF token, adopting legacy random tokens.
+
+        Sessions created before derivation stored the hash of a random token that
+        only the original tab held. Rewriting it once to the derived token's hash
+        keeps the session usable after a browser restart or in a new tab.
+        """
+        csrf = derive_csrf_token(token)
+        expected = hashlib.sha256(csrf.encode()).hexdigest()
+        with self.transaction() as c:
+            c.execute("UPDATE sessions SET csrf_hash=:csrf WHERE token_hash=:token AND revoked=0 AND csrf_hash<>:csrf",
+                      {"csrf": expected, "token": hashlib.sha256(token.encode()).hexdigest()})
+        return csrf
 
     def revoke_session(self, token):
         with self.transaction() as c:
@@ -387,13 +409,25 @@ class SimulationRepository:
         result["quality_report"] = decode(result["quality_report"])
         return result
 
-    def list_runs(self, limit=20, offset=0, scenario_revision_id=None):
-        with self.transaction() as c:
-            sql = ("SELECT r.*, s.name AS scenario_name, rev.revision_no, s.kind, j.cancel_requested "
+    RUN_SUMMARY = ("SELECT r.*, s.name AS scenario_name, s.id AS scenario_id, rev.revision_no, s.kind, j.cancel_requested "
                    "FROM simulation_runs r "
                    "JOIN scenario_revisions rev ON rev.id = r.scenario_revision_id "
                    "JOIN scenarios s ON s.id = rev.scenario_id "
                    "JOIN jobs j ON j.run_id = r.id ")
+
+    def get_run_summary(self, run_id):
+        """One run with its scenario name, kind and revision number."""
+        with self.transaction() as c:
+            run = c.one(self.RUN_SUMMARY + "WHERE r.id = :id", {"id": run_id})
+        if run is None:
+            raise ServiceError(404, "run_not_found", "Run was not found.")
+        run["frozen_inputs"] = decode(run["frozen_inputs"])
+        run["cancel_requested"] = bool(run["cancel_requested"])
+        return run
+
+    def list_runs(self, limit=20, offset=0, scenario_revision_id=None):
+        with self.transaction() as c:
+            sql = self.RUN_SUMMARY
             params = {"limit": limit, "offset": offset}
             if scenario_revision_id:
                 sql += "WHERE r.scenario_revision_id = :rev_id "
@@ -405,57 +439,203 @@ class SimulationRepository:
                 item["cancel_requested"] = bool(item["cancel_requested"])
         return {"items": items, "limit": limit, "offset": offset}
 
+    PUBLICATION_SELECT = (
+        "SELECT p.id, p.run_id, p.slug, p.title, p.summary, p.status, p.submitted_by, p.submitted_at, "
+        "p.reviewed_by, p.reviewed_at, p.decision_reason, p.published_at, p.withdrawn_by, p.withdrawn_at, "
+        "p.withdrawal_reason, p.view_count, su.display_name AS submitted_by_name, "
+        "ru.display_name AS reviewed_by_name, wu.display_name AS withdrawn_by_name{snapshot} "
+        "FROM publications p JOIN users su ON su.id = p.submitted_by "
+        "LEFT JOIN users ru ON ru.id = p.reviewed_by LEFT JOIN users wu ON wu.id = p.withdrawn_by "
+    )
+    TRANSITIONS = {
+        "approve": ("pending_review", "published", "publication.approved"),
+        "reject": ("pending_review", "rejected", "publication.rejected"),
+        "withdraw": ("published", "withdrawn", "publication.withdrawn"),
+    }
+
+    def _publication_query(self, snapshot=False):
+        return self.PUBLICATION_SELECT.format(snapshot=", p.snapshot_data" if snapshot else "")
+
+    @staticmethod
+    def _decode_publication(pub):
+        if pub is not None and "snapshot_data" in pub:
+            pub["snapshot_data"] = decode(pub["snapshot_data"])
+        return pub
+
+    def _audit(self, c, actor_id, action, entity_type, entity_id, summary):
+        c.execute("INSERT INTO audit_events(id, actor_id, action, entity_type, entity_id, created_at, change_summary) "
+                  f"VALUES(:id, :actor, :action, :type, :entity, :now, {self.json_parameter('summary')})",
+                  {"id": str(uuid4()), "actor": actor_id, "action": action, "type": entity_type,
+                   "entity": str(entity_id), "now": utc_now(), "summary": canonical_json(summary)})
+
     def create_publication(self, run_id, slug, title, summary, snapshot_data, user_id):
+        """Submit an immutable redacted snapshot for review; it is not public yet."""
         pub_id = str(uuid4())
-        now = utc_now()
-        values = {
-            "id": pub_id,
-            "run_id": run_id,
-            "slug": slug,
-            "title": title,
-            "summary": summary,
-            "snapshot_data": canonical_json(snapshot_data),
-            "user": user_id,
-            "now": now,
-        }
+        values = {"id": pub_id, "run_id": run_id, "slug": slug, "title": title, "summary": summary,
+                  "snapshot_data": canonical_json(snapshot_data), "user": user_id, "now": utc_now()}
         with self.transaction() as c:
+            pending = c.one("SELECT id FROM publications WHERE run_id = :run_id AND status = 'pending_review'",
+                            {"run_id": run_id})
+            if pending is not None:
+                raise ServiceError(409, "publication_already_pending",
+                                   "This run already has a publication awaiting review.")
             c.execute(
-                f"INSERT INTO publications(id, run_id, slug, title, summary, snapshot_data, published_by, published_at, view_count) "
-                f"VALUES(:id, :run_id, :slug, :title, :summary, {self.json_parameter('snapshot_data')}, :user, :now, 0)",
+                "INSERT INTO publications(id, run_id, slug, title, summary, snapshot_data, status, submitted_by, submitted_at, view_count) "
+                f"VALUES(:id, :run_id, :slug, :title, :summary, {self.json_parameter('snapshot_data')}, 'pending_review', :user, :now, 0)",
                 values,
             )
-        return {
-            "id": pub_id,
-            "run_id": run_id,
-            "slug": slug,
-            "title": title,
-            "summary": summary,
-            "published_at": now,
-            "view_count": 0,
-        }
+            self._audit(c, user_id, "publication.submitted", "publication", pub_id,
+                        {"status": {"from": None, "to": "pending_review"}, "slug": slug, "run_id": run_id})
+            return self._decode_publication(c.one(self._publication_query(True) + "WHERE p.id = :id", {"id": pub_id}))
 
-    def get_publication_by_slug(self, slug, increment_view=True):
+    def slug_exists(self, slug):
         with self.transaction() as c:
-            pub = c.one(
-                "SELECT p.*, u.display_name AS published_by_name FROM publications p JOIN users u ON u.id = p.published_by WHERE p.slug = :slug",
-                {"slug": slug},
-            )
+            return c.one("SELECT id FROM publications WHERE slug = :slug", {"slug": slug}) is not None
+
+    def get_publication(self, pub_id):
+        with self.transaction() as c:
+            pub = c.one(self._publication_query(True) + "WHERE p.id = :id", {"id": pub_id})
+        if pub is None:
+            raise ServiceError(404, "publication_not_found", "Publication was not found.")
+        return self._decode_publication(pub)
+
+    def list_publications(self, limit=20, offset=0, status=None, run_id=None):
+        """Private listing across every status (review queue, history)."""
+        clauses, params = [], {"limit": limit, "offset": offset}
+        if status:
+            clauses.append("p.status = :status")
+            params["status"] = status
+        if run_id:
+            clauses.append("p.run_id = :run_id")
+            params["run_id"] = run_id
+        where = ("WHERE " + " AND ".join(clauses) + " ") if clauses else ""
+        with self.transaction() as c:
+            items = c.all(self._publication_query() + where +
+                          "ORDER BY p.submitted_at DESC, p.id LIMIT :limit OFFSET :offset", params)
+        return {"items": items, "limit": limit, "offset": offset}
+
+    def list_public_publications(self, limit=20, offset=0, include_snapshot=False):
+        with self.transaction() as c:
+            items = c.all(self._publication_query(include_snapshot) + "WHERE p.status = 'published' "
+                          "ORDER BY p.published_at DESC, p.id LIMIT :limit OFFSET :offset",
+                          {"limit": limit, "offset": offset})
+        return {"items": [self._decode_publication(item) for item in items], "limit": limit, "offset": offset}
+
+    def get_public_publication(self, slug, increment_view=True):
+        """Only published rows are readable; withdrawn rows return a tombstone."""
+        with self.transaction() as c:
+            pub = c.one(self._publication_query(True) + "WHERE p.slug = :slug", {"slug": slug})
+            if pub is None or pub["status"] in ("pending_review", "rejected"):
+                raise ServiceError(404, "publication_not_found", "Publication was not found.")
+            if pub["status"] == "withdrawn":
+                raise ServiceError(410, "publication_withdrawn", "This publication has been withdrawn.",
+                                   details={"slug": pub["slug"], "title": pub["title"],
+                                            "published_at": pub["published_at"],
+                                            "withdrawn_at": pub["withdrawn_at"],
+                                            "withdrawal_reason": pub["withdrawal_reason"]})
+            if increment_view:
+                c.execute("UPDATE publications SET view_count = view_count + 1 WHERE id = :id AND status = 'published'",
+                          {"id": pub["id"]})
+                pub["view_count"] += 1
+        return self._decode_publication(pub)
+
+    def transition_publication(self, pub_id, action, actor_id, reason=None):
+        source, target, audit_action = self.TRANSITIONS[action]
+        with self.transaction() as c:
+            lock = " FOR UPDATE" if self.postgres else ""
+            pub = c.one("SELECT id, status, submitted_by FROM publications WHERE id = :id" + lock, {"id": pub_id})
             if pub is None:
                 raise ServiceError(404, "publication_not_found", "Publication was not found.")
-            if increment_view:
-                c.execute("UPDATE publications SET view_count = view_count + 1 WHERE slug = :slug", {"slug": slug})
-                pub["view_count"] += 1
-            pub["snapshot_data"] = decode(pub["snapshot_data"])
-            return pub
+            if pub["status"] != source:
+                raise ServiceError(409, "invalid_publication_state",
+                                   f"Only a {source.replace('_', ' ')} publication can become {target}.")
+            if action in ("approve", "reject") and pub["submitted_by"] == actor_id:
+                raise ServiceError(403, "self_review_forbidden",
+                                   "A publication must be reviewed by someone other than its submitter.")
+            values = {"id": pub_id, "actor": actor_id, "now": utc_now(), "reason": reason, "source": source}
+            if action == "approve":
+                c.execute("UPDATE publications SET status='published', reviewed_by=:actor, reviewed_at=:now, "
+                          "decision_reason=:reason, published_at=:now WHERE id=:id AND status=:source", values)
+            elif action == "reject":
+                c.execute("UPDATE publications SET status='rejected', reviewed_by=:actor, reviewed_at=:now, "
+                          "decision_reason=:reason WHERE id=:id AND status=:source", values)
+            else:
+                c.execute("UPDATE publications SET status='withdrawn', withdrawn_by=:actor, withdrawn_at=:now, "
+                          "withdrawal_reason=:reason WHERE id=:id AND status=:source", values)
+            self._audit(c, actor_id, audit_action, "publication", pub_id,
+                        {"status": {"from": source, "to": target}, "reason": reason})
+            return self._decode_publication(c.one(self._publication_query(True) + "WHERE p.id = :id", {"id": pub_id}))
 
-    def list_publications(self, limit=20, offset=0):
+    def list_audit_events(self, entity_type, entity_id):
         with self.transaction() as c:
-            items = c.all(
-                "SELECT p.id, p.run_id, p.slug, p.title, p.summary, p.published_at, p.view_count, u.display_name AS published_by_name "
-                "FROM publications p JOIN users u ON u.id = p.published_by ORDER BY p.published_at DESC LIMIT :limit OFFSET :offset",
-                {"limit": limit, "offset": offset},
-            )
+            items = c.all("SELECT a.id, a.actor_id, u.display_name AS actor_name, a.action, a.entity_type, a.entity_id, "
+                          "a.created_at, a.change_summary FROM audit_events a JOIN users u ON u.id = a.actor_id "
+                          "WHERE a.entity_type = :type AND a.entity_id = :entity ORDER BY a.created_at, a.id",
+                          {"type": entity_type, "entity": str(entity_id)})
+        for item in items:
+            item["change_summary"] = decode(item["change_summary"])
+        return items
+
+    def list_datasets(self, limit=20, offset=0):
+        with self.transaction() as c:
+            items = c.all("SELECT d.id, d.source_ref, d.evidence_status, d.content_hash, d.quality_report, "
+                          "d.schema_version, d.created_by, d.created_at, u.display_name AS created_by_name "
+                          "FROM dataset_versions d LEFT JOIN users u ON u.id = d.created_by "
+                          "ORDER BY d.created_at DESC, d.id LIMIT :limit OFFSET :offset",
+                          {"limit": limit, "offset": offset})
+        for item in items:
+            item["quality_report"] = decode(item["quality_report"])
         return {"items": items, "limit": limit, "offset": offset}
+
+    def create_report(self, report_type, title, params, run_ids, input_hashes, user_id):
+        values = {"id": str(uuid4()), "type": report_type, "title": title, "params": canonical_json(params),
+                  "runs": canonical_json(run_ids), "hashes": canonical_json(input_hashes),
+                  "user": user_id, "now": utc_now()}
+        with self.transaction() as c:
+            c.execute("INSERT INTO reports(id, report_type, title, params, run_ids, input_hashes, created_by, created_at) "
+                      f"VALUES(:id, :type, :title, {self.json_parameter('params')}, {self.json_parameter('runs')}, "
+                      f"{self.json_parameter('hashes')}, :user, :now)", values)
+        return self.get_report(values["id"])
+
+    @staticmethod
+    def _decode_report(report):
+        for key in ("params", "run_ids", "input_hashes"):
+            report[key] = decode(report[key])
+        return report
+
+    def get_report(self, report_id):
+        with self.transaction() as c:
+            report = c.one("SELECT r.*, u.display_name AS created_by_name FROM reports r "
+                           "LEFT JOIN users u ON u.id = r.created_by WHERE r.id = :id", {"id": report_id})
+        if report is None:
+            raise ServiceError(404, "report_not_found", "Report was not found.")
+        return self._decode_report(report)
+
+    def list_reports(self, limit=20, offset=0):
+        with self.transaction() as c:
+            items = c.all("SELECT r.*, u.display_name AS created_by_name FROM reports r "
+                          "LEFT JOIN users u ON u.id = r.created_by "
+                          "ORDER BY r.created_at DESC, r.id LIMIT :limit OFFSET :offset",
+                          {"limit": limit, "offset": offset})
+        return {"items": [self._decode_report(item) for item in items], "limit": limit, "offset": offset}
+
+    def list_insight_reviews(self, user_id):
+        with self.transaction() as c:
+            return c.all("SELECT insight_key, status, note, updated_at FROM insight_reviews "
+                         "WHERE user_id = :user ORDER BY updated_at DESC", {"user": user_id})
+
+    def save_insight_review(self, user_id, insight_key, status, note):
+        values = {"user": user_id, "key": insight_key, "status": status, "note": note, "now": utc_now()}
+        with self.transaction() as c:
+            c.execute("INSERT INTO insight_reviews(user_id, insight_key, status, note, updated_at) "
+                      "VALUES(:user, :key, :status, :note, :now) ON CONFLICT(user_id, insight_key) DO UPDATE SET "
+                      "status = excluded.status, note = excluded.note, updated_at = excluded.updated_at", values)
+        return {"insight_key": insight_key, "status": status, "note": note, "updated_at": values["now"]}
+
+    def delete_insight_review(self, user_id, insight_key):
+        with self.transaction() as c:
+            c.execute("DELETE FROM insight_reviews WHERE user_id = :user AND insight_key = :key",
+                      {"user": user_id, "key": insight_key})
 
     def save_ai_explanation(self, run_id, focus, narrative, key_drivers, grounded_evidence):
         exp_id = str(uuid4())

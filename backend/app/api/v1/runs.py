@@ -33,6 +33,16 @@ def get_run(run_id: UUID, service=Depends(get_service)):
     return service.get_run(str(run_id))
 
 
+@router.get("/{run_id}/inputs", dependencies=[Depends(require_session)])
+def get_run_inputs(run_id: UUID, repository=Depends(get_repository)):
+    """Frozen parameters of a run, used to start a new scenario from it."""
+    run = repository.get_run_summary(str(run_id))
+    return {"run_id": run["id"], "scenario_id": run["scenario_id"], "scenario_name": run["scenario_name"],
+            "kind": run["kind"], "revision_no": run["revision_no"], "status": run["status"],
+            "parameters": run["frozen_inputs"]["parameters"],
+            "requested_modules": run["frozen_inputs"]["requested_modules"]}
+
+
 @router.get("/{run_id}/results", dependencies=[Depends(require_session)])
 def get_results(run_id: UUID, service=Depends(get_service)):
     return service.get_results(str(run_id))

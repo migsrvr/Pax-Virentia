@@ -1,13 +1,14 @@
 import { Link } from 'react-router-dom';
 import PublicHeader from '../components/public/PublicHeader';
 import PublicFooter from '../components/public/PublicFooter';
-import { PUBLIC_REPORT_UNAVAILABLE } from '../services/mockData';
+import { publishedOn } from '../components/public/publicPortal';
+import type { WithdrawnTombstone } from '../services/publications';
 import iconArchive from '../assets/pv/icon-archive.svg';
 
 /**
- * P09 · Report unavailable (Figma 47:2) — public portal.
- * Standalone status page reached from the withdrawn PS-003 row on the reports
- * page. Copy verbatim from the frame.
+ * P09 · Report unavailable (Figma 47:2). Shown for a withdrawn publication
+ * (from the API's 410 tombstone) or for a report that was never published.
+ * A withdrawn report's figures are never shown.
  */
 
 const OUTLINE_BTN =
@@ -15,8 +16,18 @@ const OUTLINE_BTN =
 const PRIMARY_BTN =
   'inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-lg border border-transparent bg-pv-action px-4 text-[14px] font-semibold leading-5 text-white transition-opacity hover:opacity-90';
 
-export default function PublicReportUnavailablePage() {
-  const page = PUBLIC_REPORT_UNAVAILABLE;
+export default function PublicReportUnavailablePage({ tombstone }: { tombstone?: WithdrawnTombstone }) {
+  const withdrawn = !!tombstone;
+  const items = withdrawn
+    ? [
+        'A utility reviewer removed the snapshot from public view.',
+        'Its figures shouldn’t be quoted or compared with current results.',
+        'Current reports are listed on the reports page.',
+      ]
+    : [
+        'The link may be mistyped, or the report may still be awaiting review.',
+        'Only reports approved by a utility reviewer appear on this portal.',
+      ];
 
   return (
     <div className="flex min-h-screen flex-col bg-pv-page font-inter text-pv-ink">
@@ -31,39 +42,41 @@ export default function PublicReportUnavailablePage() {
           <div className="flex w-full flex-col items-start gap-2">
             <div className="flex flex-wrap items-center gap-3">
               <h1 className="text-[28px] font-semibold leading-9 tracking-[-0.28px] text-pv-ink">
-                {page.title}
+                {withdrawn ? 'This report is no longer available' : 'This report isn’t available'}
               </h1>
               <span className="inline-flex h-6 items-center rounded-full bg-pv-muted-bg px-2 text-[12px] font-medium leading-4 text-pv-ink-light">
-                {page.badge}
+                {withdrawn ? 'Withdrawn' : 'Not published'}
               </span>
             </div>
-            <p className="w-full text-[14px] leading-5 text-pv-ink-light">{page.body}</p>
+            <p className="w-full text-[14px] leading-5 text-pv-ink-light">
+              {withdrawn
+                ? `“${tombstone.title}” was withdrawn on ${publishedOn(tombstone.withdrawn_at)}. Withdrawn reports aren’t published, so nothing from it is shown here.`
+                : 'There is no published report at this address.'}
+            </p>
+            {withdrawn && tombstone.withdrawal_reason ? (
+              <p className="w-full text-[14px] leading-5 text-pv-ink">Reason: {tombstone.withdrawal_reason}</p>
+            ) : null}
           </div>
 
           <div className="flex w-full flex-col items-start gap-2 rounded-xl bg-pv-page p-4">
-            <p className="text-[14px] font-semibold leading-5 text-pv-ink">{page.callout.heading}</p>
-            <ul className="flex w-full flex-col gap-1 pl-5">
-              {page.callout.items.map((item) => (
-                <li key={item} className="relative text-[14px] leading-5 text-pv-ink-light">
-                  <span aria-hidden="true" className="absolute -left-5 top-0 w-3.5 text-right">
-                    •
-                  </span>
-                  {item}
-                </li>
-              ))}
+            <p className="text-[14px] font-semibold leading-5 text-pv-ink">
+              {withdrawn ? 'What withdrawal means' : 'Why this happens'}
+            </p>
+            <ul className="flex w-full list-disc flex-col gap-1 pl-5 text-[14px] leading-5 text-pv-ink-light">
+              {items.map((item) => <li key={item}>{item}</li>)}
             </ul>
           </div>
 
           <div className="flex w-full flex-wrap items-start gap-4">
-            <Link to={page.primary.to} className={PRIMARY_BTN}>
-              {page.primary.label}
-            </Link>
-            <Link to={page.secondary.to} className={OUTLINE_BTN}>
-              {page.secondary.label}
-            </Link>
+            <Link to="/public/reports" className={PRIMARY_BTN}>See current reports</Link>
+            <Link to="/public/overview" className={OUTLINE_BTN}>Go to the dashboard</Link>
           </div>
 
-          <p className="text-[12px] leading-4 text-pv-ink-light">{page.reference}</p>
+          {withdrawn ? (
+            <p className="text-[12px] leading-4 text-pv-ink-light">
+              Reference: {tombstone.slug} · withdrawn {publishedOn(tombstone.withdrawn_at)}
+            </p>
+          ) : null}
         </article>
       </main>
 

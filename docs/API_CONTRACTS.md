@@ -6,8 +6,8 @@
 **Source of truth:** `Pax-Virentia-System-Design.md`, `CONTEXT.md`, the master implementation plan, and the current FastAPI application.
 
 > **Contract status.** This document specifies the agreed contract for the full system. A small
-> number of endpoints are not yet routed in the current backend; see
-> [§11 Implementation alignment](#11-implementation-alignment). Where implementation and this
+> number of items are not yet implemented (see
+> [§12 Implementation alignment](#12-implementation-alignment)). Where implementation and this
 > contract differ, this document is the target and the difference is listed explicitly rather than
 > hidden. Do not infer scientific validity from HTTP success.
 
@@ -33,7 +33,12 @@
 - Opaque server-side sessions. The browser receives a `__Host-pv_session` cookie:
   `Secure; HttpOnly; SameSite=Lax; Path=/`, no `Domain` attribute.
 - The login response also returns a CSRF token. The browser must send it as `X-CSRF-Token` on every
-  state-changing private request.
+  state-changing private request (including logout).
+- The CSRF token is `HMAC-SHA256(SECRET_KEY, session token)`; only its SHA-256 hash is stored with the
+  session. `GET /auth/session` re-derives and returns it from the cookie, so a restored browser or a
+  new tab regains write access. The frontend keeps it in memory and `sessionStorage`, and on
+  `403 csrf_rejected` refreshes it from `/auth/session` and retries the write once. Rotating
+  `SECRET_KEY` invalidates every CSRF token until the next `/auth/session` call re-adopts it.
 - Session lifetime: 24 hours, or 720 hours when `remember: true`.
 - A session token is never returned in a JSON body other than the login response's cookie; do not
   store it in `localStorage`.
@@ -43,7 +48,7 @@
 | Header | When | Rule |
 | --- | --- | --- |
 | `Origin` | All state-changing private requests | Must exactly match an entry in `ALLOWED_ORIGINS`, otherwise `403 origin_rejected` or `403 csrf_rejected`. |
-| `X-CSRF-Token` | All private `POST` requests made by an analyst/administrator | Required; constant-time compared against the session's stored CSRF hash. |
+| `X-CSRF-Token` | All private `POST`, `PUT` and `DELETE` requests, including logout | Required; constant-time compared against the session's stored CSRF hash. |
 | `Idempotency-Key` | `POST /api/v1/runs` | Required. 1–200 characters. Bound to user + endpoint + request hash. |
 | `Content-Type` | JSON endpoints | `application/json`. |
 | `Content-Type` | CSV ingestion | `text/csv` or `application/csv`. Uploads above 10 MB are rejected with `413`. |
@@ -54,10 +59,14 @@
 
 | Role | API capability |
 | --- | --- |
-| `analyst` | Create scenarios/revisions, submit and cancel runs, compare, inspect datasets, request explanations, create publications (planned). |
-| `administrator` | Same as analyst, plus catalog/model administration and publication withdrawal (planned endpoints). |
-| `reviewer` | Read workspace evidence and results; approve/reject publications (planned). The current backend role guard admits `analyst` and `administrator` only for mutating routes. |
-| Public visitor | Read-only `GET /api/v1/public/reports` and `GET /api/v1/public/reports/{slug}`. No access to drafts, raw files, or internal notes. |
+| `analyst` | Create scenarios/revisions, submit and cancel runs, compare, import datasets, request explanations, export reports, mark insights, **submit** publications for review. |
+| `reviewer` | Read workspace evidence and results; **approve, reject or withdraw** publications (never their own submissions). Cannot submit or run. |
+| `administrator` | Everything an analyst and a reviewer can do. Still cannot decide on their own submission. |
+| Public visitor | Read-only published reports (`/public/reports*`). No access to drafts, raw files, or internal notes. |
+
+Guards live in `backend/app/api/dependencies.py` (`require_analyst`, `require_reviewer`,
+`require_session_write`); each mutating guard also enforces trusted `Origin` and CSRF. Accounts are
+provisioned with `python -m app.bootstrap create-user --email … --role analyst|reviewer|administrator`.
 
 ### 2.4 Standard success envelope
 
@@ -153,7 +162,7 @@ Set-Cookie: __Host-pv_session=<opaque>; Max-Age=86400; Path=/; Secure; HttpOnly;
 
 ### 3.2 `POST /api/v1/auth/logout`
 
-Revokes the current session and clears the cookie. **Session required.**
+Revokes the current session and clears the cookie. **Session, trusted `Origin` and `X-CSRF-Token` required.**
 
 **Response `200`**
 
@@ -161,11 +170,11 @@ Revokes the current session and clears the cookie. **Session required.**
 { "status": "signed_out" }
 ```
 
-**Errors:** `401 authentication_required`.
+**Errors:** `401 authentication_required`, `403 csrf_rejected`.
 
 ### 3.3 `GET /api/v1/auth/session`
 
-Returns the authenticated user. **Session required.**
+Returns the authenticated user and the session's CSRF token (§2.1). **Session required.**
 
 **Response `200`**
 
@@ -176,7 +185,8 @@ Returns the authenticated user. **Session required.**
     "email": "ana.santos@example.com",
     "display_name": "Ana Santos",
     "role": "analyst"
-  }
+  },
+  "csrf_token": "3f6c…"
 }
 ```
 
@@ -187,7 +197,7 @@ Returns the authenticated user. **Session required.**
 ## 4. Catalogs
 
 Catalog reads are read-only. In the current backend they are **not** session-guarded; they expose
-curated reference data only. See [§11](#11-implementation-alignment).
+curated reference data only. See [§12](#12-implementation-alignment).
 
 ### 4.1 `GET /api/v1/catalogs/factors`
 
@@ -509,7 +519,7 @@ quality gate), `422 invalid_request` for a missing `Idempotency-Key`.
 
 ### 6.2 `GET /api/v1/runs`
 
-**Permission:** any valid session. **Status:** planned (see §11).
+**Permission:** any valid session.
 
 **Query:** `limit` (1–100, default 20), `offset`, optional `scenario_revision_id`.
 
@@ -793,7 +803,7 @@ the API returns a deterministic template narrative.
 
 ### 8.1 `POST /api/v1/runs/{run_id}/explain`
 
-**Permission:** analyst/administrator + CSRF. **Status:** planned (see §11).
+**Permission:** analyst/administrator + CSRF.
 
 **Request**
 
@@ -839,112 +849,114 @@ the API returns a deterministic template narrative.
 
 ### 8.2 `GET /api/v1/runs/{run_id}/explain`
 
-**Permission:** any valid session. **Status:** planned.
+**Permission:** any valid session.
 
 **Response `200`** — the stored explanation object (§8.1). Returns `404 explanation_not_found` when
 none has been generated.
 
 ---
 
-## 9. Public reports
+## 9. Publications and public reports
 
 Public reporting is a reviewed, redacted snapshot. Publication does not imply regulatory approval.
-Private draft edits never silently change published content.
+Private draft edits never silently change published content: the redacted snapshot is frozen when
+the analyst submits it.
 
-### 9.1 `POST /api/v1/runs/{run_id}/publish`
+### 9.1 Publication state machine
 
-**Permission:** reviewer/administrator (planned; see §11) + CSRF.
+| From | Action | To | Who | Notes |
+| --- | --- | --- | --- | --- |
+| — | `POST /publications` | `pending_review` | analyst / administrator | At most one pending submission per run. |
+| `pending_review` | `POST /publications/{id}/approve` | `published` | reviewer / administrator, not the submitter | Optional `reason`; sets `published_at`. |
+| `pending_review` | `POST /publications/{id}/reject` | `rejected` | reviewer / administrator, not the submitter | `reason` required. The analyst may submit a new version. |
+| `published` | `POST /publications/{id}/withdraw` | `withdrawn` | reviewer / administrator | `reason` required. Public access ends immediately. |
+
+Every transition runs in a row-locked transaction and writes an `audit_events` row
+(`actor_id`, `action`, `entity_type`, `entity_id`, `created_at`, `change_summary`).
+Invalid transitions return `409 invalid_publication_state`; deciding on your own submission returns
+`403 self_review_forbidden`. All publication writes require a session, trusted `Origin` and
+`X-CSRF-Token`.
+
+Publications created before this workflow existed were never reviewed. Migration `0002` backfills
+them as `pending_review`, so they leave the public site until a reviewer approves them.
+
+### 9.2 `POST /api/v1/publications`
+
+**Permission:** analyst/administrator + CSRF.
 
 **Request**
 
 ```json
 {
-  "slug": "pax-silica-pilot-2026-01",
+  "run_id": "0f2f9d6b-6f2e-4c0e-8b7e-8e3b9a4c1d22",
+  "slug": "pax-silica-pilot-2024-01",
   "title": "Pax Silica pilot — representative plant comparison",
-  "summary": "Electricity demand and electricity-associated emissions are lower in the modelled intervention. Ecological effects are not estimable."
+  "summary": "Electricity demand is lower in the modelled intervention. Ecological effects are not estimable."
 }
 ```
 
-**Response `201`**
+`slug` (lowercase words joined by `-`, ≤100) and `summary` are optional; `title` defaults to
+"Water-treatment scenario report". Text may not contain markup or control characters.
+
+**Response `201`** (private schema, `Location: /api/v1/publications/{id}`)
 
 ```json
 {
   "id": "6a2c8f1e-3a4b-4c5d-8e9f-0a1b2c3d4e5f",
   "run_id": "0f2f9d6b-6f2e-4c0e-8b7e-8e3b9a4c1d22",
-  "slug": "pax-silica-pilot-2026-01",
+  "slug": "pax-silica-pilot-2024-01",
   "title": "Pax Silica pilot — representative plant comparison",
-  "summary": "Electricity demand and electricity-associated emissions are lower in the modelled intervention. Ecological effects are not estimable.",
-  "published_by": "8f1c…",
-  "published_at": "2026-10-20T12:10:00+00:00",
-  "view_count": 0
+  "summary": "…",
+  "status": "pending_review",
+  "submitted_by": "8f1c…", "submitted_by_name": "Ana Santos", "submitted_at": "2026-10-20T12:10:00+00:00",
+  "reviewed_by": null, "reviewed_by_name": null, "reviewed_at": null, "decision_reason": null,
+  "published_at": null,
+  "withdrawn_by": null, "withdrawn_by_name": null, "withdrawn_at": null, "withdrawal_reason": null,
+  "view_count": 0,
+  "public_path": "/public/reports/pax-silica-pilot-2024-01",
+  "snapshot_data": { "...": "the exact public payload, §9.6" }
 }
 ```
 
-**Errors:** `401`, `403`, `404 run_not_found`, `409 results_not_available`,
-`409 slug_conflict` (planned), `422 invalid_request`.
+**Errors:** `401`, `403 insufficient_role` (reviewers cannot submit), `403 csrf_rejected`,
+`404 run_not_found`, `409 results_not_available`, `409 publication_slug_conflict`,
+`409 publication_already_pending`, `422 invalid_request`.
 
-### 9.2 `GET /api/v1/public/reports/{slug}`
+### 9.3 `GET /api/v1/publications` and `GET /api/v1/publications/{id}`
 
-**Permission:** public, unauthenticated. No session or CSRF.
+**Permission:** any valid session.
 
-**Response `200`**
+`GET /publications?status=pending_review|published|rejected|withdrawn&run_id=…&limit&offset`
+returns `{items, limit, offset}` in the private schema without `snapshot_data`, newest submission
+first. `GET /publications/{id}` adds `snapshot_data` (the exact public payload) and `audit` (the
+ordered audit trail). Unknown status → `422`; unknown id → `404 publication_not_found`.
 
-```json
-{
-  "slug": "pax-silica-pilot-2026-01",
-  "title": "Pax Silica pilot — representative plant comparison",
-  "summary": "Electricity demand and electricity-associated emissions are lower in the modelled intervention. Ecological effects are not estimable.",
-  "published_at": "2026-10-20T12:10:00+00:00",
-  "published_by_name": "Ana Santos",
-  "view_count": 12,
-  "snapshot": {
-    "volume_m3": 61600,
-    "period_start": "2025-12-31T16:00:00+00:00",
-    "period_end": "2026-01-05T15:59:59+00:00",
-    "currency": "PHP",
-    "energy_kwh": 22176.0,
-    "energy_intensity_kwh_per_m3": 0.36,
-    "emissions": { "value": 15793.7, "unit": "kg CO2e", "boundary": "electricity-associated only" },
-    "opex_php": 274496.64,
-    "ecology": {
-      "status": "not_estimable",
-      "value": null,
-      "reason": "Validated local exposure-response model or paired observation dataset is unavailable."
-    },
-    "limitations": [
-      "Treatment specification is unverified.",
-      "Emissions cover purchased electricity only.",
-      "Ecological effects are not estimable without validated local evidence."
-    ]
-  }
-}
-```
+### 9.4 Review decisions
 
-The public schema never includes raw CSV bytes, source files, internal notes, session data, or
-unpublished runs. `view_count` is incremented on read.
+`POST /api/v1/publications/{id}/approve` body `{"reason": "…"}` (optional; the body may be omitted),
+`POST …/reject` and `POST …/withdraw` body `{"reason": "…"}` (required, 1–2000 plain-text
+characters). Each returns `200` with the updated private publication.
 
-**Errors:** `404 publication_not_found`.
+**Errors:** `401`, `403 insufficient_role`, `403 csrf_rejected`, `403 self_review_forbidden`,
+`404 publication_not_found`, `409 invalid_publication_state`, `422 invalid_request`.
 
-### 9.3 `GET /api/v1/public/reports`
+### 9.5 `GET /api/v1/public/reports`
 
-**Permission:** public, unauthenticated.
+**Permission:** public, unauthenticated. Lists **published** reports only, newest first.
 
-**Query:** `limit` (1–100, default 20), `offset`.
-
-**Response `200`**
+**Query:** `limit` (1–100, default 20), `offset`, `include_snapshot` (default `false`; when `true`
+each item carries `snapshot_data` so side-by-side pages need no per-report reads).
 
 ```json
 {
   "items": [
     {
-      "id": "6a2c8f1e-3a4b-4c5d-8e9f-0a1b2c3d4e5f",
-      "run_id": "0f2f9d6b-6f2e-4c0e-8b7e-8e3b9a4c1d22",
-      "slug": "pax-silica-pilot-2026-01",
+      "slug": "pax-silica-pilot-2024-01",
       "title": "Pax Silica pilot — representative plant comparison",
-      "summary": "Electricity demand and electricity-associated emissions are lower in the modelled intervention. Ecological effects are not estimable.",
-      "published_at": "2026-10-20T12:10:00+00:00",
+      "summary": "…",
+      "published_at": "2026-10-20T12:30:00+00:00",
       "view_count": 12,
-      "published_by_name": "Ana Santos"
+      "public_path": "/public/reports/pax-silica-pilot-2024-01"
     }
   ],
   "limit": 20,
@@ -952,20 +964,104 @@ unpublished runs. `view_count` is incremented on read.
 }
 ```
 
-### 9.4 Withdrawal (planned)
+Listing never increments `view_count`.
 
-`POST /api/v1/public/reports/{id}/withdraw` — administrator only. Revokes public access immediately
-and retains the internal audit record. Response `200` with the publication status set to
-`withdrawn`. Subsequent public reads return `404`. **Status:** planned.
+### 9.6 `GET /api/v1/public/reports/{slug}`
+
+**Permission:** public, unauthenticated.
+
+**Response `200`** for a published report: the public list fields plus `snapshot_data`:
+
+```json
+{
+  "schema_version": 1,
+  "boundary": { "volume_m3": 1200, "period_start": "…", "period_end": "…", "currency": "PHP" },
+  "metrics": [
+    { "key": "energy", "value": 444.0, "unit": "kWh", "status": "valid", "interval_key": "total" },
+    { "key": "ecology", "value": null, "unit": null, "status": "not_estimable", "reason": "…", "required_evidence": ["…"], "interval_key": "total" }
+  ],
+  "provenance": { "technology_evidence_status": "unverified", "factor_evidence_status": "externally_sourced", "emissions_boundary": "electricity-associated only" },
+  "limitations": ["…"],
+  "energy": { "total_kwh": 444.0, "energy_intensity_kwh_per_m3": 0.37, "status": "valid" },
+  "carbon": { "emissions_kg_co2e": 316.2, "factor_kg_per_kwh": 0.7122, "gas_basis": "CO2e", "unit": "kg CO2e" },
+  "economics": { "total_opex_php": 7884.0, "...": "allowlisted cost fields" },
+  "ecology": { "indicator_key": "downstream_stress", "status": "not_estimable", "value": null, "unit": null, "reason": "…", "required_evidence": ["…"] }
+}
+```
+
+`view_count` is incremented on each successful read. The public schema never includes identifiers,
+people, workflow fields, raw CSV bytes, source references, internal notes or unpublished runs.
+
+| Publication status | Response |
+| --- | --- |
+| `published` | `200` as above |
+| `withdrawn` | `410 publication_withdrawn` with `error.details = {slug, title, published_at, withdrawn_at, withdrawal_reason}` and no snapshot |
+| `pending_review`, `rejected`, unknown or malformed slug | `404 publication_not_found` |
 
 ---
 
-## 10. Datasets (implemented, supporting the scenario contract)
+## 10. Reports, insights and run inputs
+
+### 10.1 Report requests
+
+```json
+{
+  "report_type": "technical",
+  "title": "Scenario analysis report",
+  "run_ids": ["<baseline run>", "<intervention run>"],
+  "sections": ["summary", "inputs", "results", "comparison"],
+  "formats": ["pdf", "csv"],
+  "comparison": { "baseline_run_id": "<baseline run>", "intervention_run_id": "<intervention run>" }
+}
+```
+
+- `report_type`: `technical` or `data_export` (CSV only; `pdf` is rejected).
+- `run_ids`: 1–5 unique succeeded runs. `sections`: any of `summary`, `inputs`, `results`,
+  `comparison`; *Methodology and limitations* is always appended. `formats`: `pdf` and/or `csv`.
+- `comparison` is required exactly when the `comparison` section is selected; both runs must be in
+  `run_ids` and compatible (§7), otherwise `422 incompatible_comparison`.
+
+The report model is an ordered list of sections with paragraphs and tables of raw cells. Missing
+scientific values are written as "Not estimable" or "Not available", never `0`.
+
+| Method and path | Permission | Result |
+| --- | --- | --- |
+| `POST /api/v1/reports/preview` | analyst/administrator + CSRF | `200 {"preview": model}`; nothing is stored |
+| `POST /api/v1/reports` | analyst/administrator + CSRF | `201` stored request (`id, report_type, title, run_ids, sections, formats, created_by_name, created_at`) plus `preview` |
+| `GET /api/v1/reports` | session | `{items, limit, offset}` of stored requests |
+| `GET /api/v1/reports/{id}` | session | stored request plus a regenerated `preview` |
+| `GET /api/v1/reports/{id}/download?format=pdf\|csv&disposition=attachment\|inline` | session | The file, regenerated from stored results; `404 report_format_unavailable` for a format not requested; `409 report_inputs_changed` if a run's snapshot hash no longer matches |
+| `GET /api/v1/public/reports/{slug}/download?format=pdf\|csv` | public | Built from the redacted public snapshot only; `404`/`410` as §9.6 |
+
+Files are not stored (container filesystems are ephemeral); only the request and the runs'
+snapshot hashes are. CSV cells starting with `=`, `+`, `-`, `@`, tab or carriage return are prefixed
+with `'`. PDFs are generated with reportlab in invariant mode, so regeneration is byte-stable. Every
+page carries the label "Simulated estimates · offline plant model — not measured or validated
+results".
+
+### 10.2 Insight reviews
+
+Per-user marks on a baseline/intervention pair, keyed `<baseline_run_id>:<intervention_run_id>`.
+
+- `GET /api/v1/insight-reviews` (session) → `{"items": [{"insight_key", "status", "note", "updated_at"}]}`
+- `PUT /api/v1/insight-reviews/{key}` (analyst/administrator + CSRF) body
+  `{"status": "reviewed" | "dismissed", "note": "…"}` (note optional, plain text ≤1000)
+- `DELETE /api/v1/insight-reviews/{key}` (analyst/administrator + CSRF) → `204`
+
+### 10.3 `GET /api/v1/runs/{run_id}/inputs`
+
+**Permission:** session. Returns a run's frozen parameters so the workspace can start a **new**
+scenario from them: `{run_id, scenario_id, scenario_name, kind, revision_no, status, parameters,
+requested_modules}`. `404 run_not_found`.
+
+---
+
+## 11. Datasets (implemented, supporting the scenario contract)
 
 These endpoints are part of the evidence pipeline even though the assigned endpoint list focuses on
 scenarios, runs, comparisons, explanations, and reports.
 
-### 10.1 `POST /api/v1/datasets/inspect`
+### 11.1 `POST /api/v1/datasets/inspect`
 
 **Permission:** analyst/administrator. **Content-Type:** `text/csv`.
 
@@ -999,7 +1095,7 @@ negative or nonfinite numeric measurements are invalid; outliers are flagged, ne
 **Errors:** `413 csv_too_large`, `415 unsupported_media_type`, `422 invalid_csv_encoding`,
 `422 invalid_csv`, `422 invalid_csv_header`, `422 invalid_csv_shape`, `422 csv_too_many_rows`.
 
-### 10.2 `POST /api/v1/datasets`
+### 11.2 `POST /api/v1/datasets`
 
 **Query:** `source_ref` (1–1000 chars), `evidence_status` (`measured`, `externally_sourced`,
 `assumed`, `synthetic`). **Content-Type:** `text/csv`.
@@ -1012,13 +1108,13 @@ Stores the exact bytes and checksum with the quality report.
 {
   "id": "c2f4a8e0-1b3d-4c5e-8f9a-0b1c2d3e4f50",
   "content_hash": "9f2c…a41b",
-  "quality_report": { "...": "§10.1 report" },
+  "quality_report": { "...": "§11.1 report" },
   "source_ref": "Plant logbook Jan 2026",
   "evidence_status": "measured"
 }
 ```
 
-### 10.3 `GET /api/v1/datasets/{dataset_id}/quality`
+### 11.3 `GET /api/v1/datasets/{dataset_id}/quality`
 
 **Permission:** any valid session. Returns the stored quality report.
 
@@ -1026,54 +1122,48 @@ Stores the exact bytes and checksum with the quality report.
 
 ---
 
-## 11. Implementation alignment
+### 11.4 `GET /api/v1/datasets`
 
-The table records what the current backend routes expose versus this contract. Planned items are
-owned by the backend implementation, not by this documentation task.
+**Permission:** any valid session. **Query:** `limit` (1–100), `offset`.
 
-| Contract endpoint | Current backend | Notes |
-| --- | --- | --- |
-| `POST/GET /auth/login`, `/auth/logout`, `/auth/session` | Implemented | Matches this contract. |
-| `GET /catalogs/factors` | Implemented | Catalog currently lists 2024 DOE/IEA factors, including a CO2-only factor; values differ from the 2023 sample JSON in `research/data/`. |
-| `GET /catalogs/technologies` | Implemented | Pax Silica is `unverified`; conventional is `assumed`. |
-| `GET /catalogs/models` | Implemented | Matches module/version names used in run provenance. |
-| `POST/GET /scenarios`, `POST/GET /scenarios/{id}/revisions` | Implemented | Matches this contract. |
-| `POST /runs` | Implemented | `202`, `Location`, `Retry-After: 2`, idempotency replay/conflict. |
-| `GET /runs` | **Planned** | Repository `list_runs()` exists; no route is mounted. |
-| `GET /runs/{id}` | Implemented | Matches this contract. |
-| `GET /runs/{id}/results` | Implemented | `409 results_not_available` until succeeded. |
-| `POST /runs/{id}/cancel` | Implemented | Submission-owner only. |
-| `POST /comparisons` | Implemented | Compatibility includes region and factor basis/method. |
-| `POST/GET /runs/{id}/explain` | **Planned** | The master plan specifies `/runs/{id}/explanations` (plural). The `ai_explanations` table and repository read/write helpers already exist. |
-| `POST /runs/{id}/publish` | **Planned** | The master plan specifies `POST /publications`. Repository `create_publication()` exists. |
-| `GET /public/reports/{slug}` | **Planned** | The master plan specifies `GET /publications/{public_id}`. Repository `get_publication_by_slug()` exists. |
-| `GET /public/reports` | **Planned** | The master plan specifies `GET /publications`. Repository `list_publications()` exists. |
-| `POST .../withdraw` | **Planned** | Table has no withdrawn column yet. |
-| `POST/GET /datasets*` | Implemented | Supporting evidence pipeline. |
-
-**Additional observations for the planner**
-
-1. **Route naming.** Explanations and publications exist in the master plan under plural
-   `/explanations` and `/publications` paths, while this task specifies singular `/explain`,
-   `/publish`, and `/public/reports`. Pick one set before frontend wiring; do not implement both.
-2. **Catalog authentication.** `GET /catalogs/*` currently requires no session. If catalog reads
-   should be private, add `require_session` to those routes.
-3. **Reviewer mutations.** `require_analyst` admits `analyst` and `administrator` only. Publishing
-   and withdrawal for `reviewer` require a dedicated guard.
-4. **Publication withdrawal.** The `publications` table has no `status` or `withdrawn_at` column,
-   so withdrawal currently needs a schema addition rather than a route alone.
-5. **View counting.** `GET` on a public report mutates `view_count`; this is acceptable for public
-   reads but should remain outside any transaction that could block publication.
+Lists registered dataset versions, newest first, without raw CSV bytes or per-row findings:
+`{id, source_ref, evidence_status, content_hash, schema_version, created_by, created_by_name,
+created_at, row_count, column_count, quality: {missing_columns, critical_missing_values,
+invalid_values, duplicate_rows, outliers}}` (quality values are counts).
 
 ---
 
-## 12. Cross-cutting contract rules
+## 12. Implementation alignment
+
+Status of every route as of 24 Oct 2026. All are mounted under `/api/v1`.
+
+| Endpoint | Status | Notes |
+| --- | --- | --- |
+| `POST /auth/login`, `POST /auth/logout`, `GET /auth/session` | Implemented | Logout requires CSRF; session re-issues the CSRF token (§2.1). |
+| `GET /catalogs/factors`, `/technologies`, `/models` | Implemented | Public reads. The catalog lists 2024 factors; `research/data/grid_emission_factors.json` is a superseded research note (see `research/data/README.md`). |
+| `POST/GET /scenarios`, `POST/GET /scenarios/{id}/revisions` | Implemented | |
+| `POST /runs`, `GET /runs`, `GET /runs/{id}`, `GET /runs/{id}/inputs`, `GET /runs/{id}/results`, `POST /runs/{id}/cancel` | Implemented | |
+| `POST /comparisons` | Implemented | Analyst/administrator + CSRF. |
+| `POST/GET /runs/{id}/explain` | Implemented | Deterministic fallback without a Gemini key. |
+| `POST/GET /publications`, `GET /publications/{id}`, `POST /publications/{id}/approve\|reject\|withdraw` | Implemented | Replaces the former one-step `POST /runs/{id}/publish`, which is removed. |
+| `GET /public/reports`, `GET /public/reports/{slug}`, `GET /public/reports/{slug}/download` | Implemented | Published only; withdrawn → `410`. |
+| `POST /reports/preview`, `POST/GET /reports`, `GET /reports/{id}`, `GET /reports/{id}/download` | Implemented | §10.1 |
+| `GET/PUT/DELETE /insight-reviews` | Implemented | §10.2 |
+| `POST /datasets/inspect`, `POST /datasets`, `GET /datasets`, `GET /datasets/{id}/quality` | Implemented | |
+| `POST /catalogs/versions` | Not implemented | Catalog changes are made in code; there is no admin editor. |
+
+Schema changes are applied by Alembic revisions in `backend/app/migrations/versions/`
+(`python -m app.bootstrap` runs `upgrade head`; revision `0001` adopts pre-migration databases).
+
+---
+
+## 13. Cross-cutting contract rules
 
 - Validate all numbers as finite; reject `NaN` and `Infinity`.
 - Reject unknown body fields (`extra="forbid"`).
 - Preserve `null` for unavailable scientific values; never coerce to `0`.
 - Never accept client-supplied calculation results, model approvals, or evidence approvals.
-- Escape CSV cells beginning with `=`, `+`, `-`, or `@` on export.
+- Escape CSV cells beginning with `=`, `+`, `-`, `@`, tab or carriage return on export (prefix `'`).
 - Log request IDs, run IDs, durations, and stable error codes; never log passwords, session tokens,
   raw confidential uploads, or provider traces.
 - Return `Cache-Control: private, no-store` on all `/api/v1` responses.

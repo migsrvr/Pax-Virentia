@@ -1,25 +1,18 @@
 import { useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { FileText, Sparkles } from 'lucide-react';
+import { Sparkles } from 'lucide-react';
 import { api, ApiError } from '../services/api';
-import { errorMessage, format, listRuns } from '../services/simulation';
-import type { Explanation, Publication, Results } from '../services/simulation';
+import { assumptionRows, emissionsOf, errorMessage, format, listRuns } from '../services/simulation';
+import type { Explanation, Results } from '../services/simulation';
 import { Chip, SectionCard, btnPrimary, btnSecondary } from './scenarios/shared';
 import StatusBadge from '../components/common/StatusBadge';
-
-function assumptionRows(value: unknown, prefix = ''): [string, string][] {
-  if (value === null || value === undefined) return [[prefix, 'Not supplied']];
-  if (Array.isArray(value)) return [[prefix, value.map(item => typeof item === 'object' ? JSON.stringify(item) : String(item)).join(', ')]];
-  if (typeof value === 'object') return Object.entries(value).flatMap(([key, entry]) => assumptionRows(entry, prefix ? `${prefix} / ${key}` : key));
-  return [[prefix.replace(/_/g, ' '), String(value)]];
-}
+import PublicationPanel from '../components/common/PublicationPanel';
 
 export default function ResultsPage() {
   const [params, setParams] = useSearchParams();
   const queryClient = useQueryClient();
   const [tab, setTab] = useState('overview');
-  const [publicationSummary, setPublicationSummary] = useState('');
   const runs = useQuery({ queryKey: ['runs'], queryFn: listRuns, refetchInterval: 15000 });
   const succeeded = runs.data?.filter(run => run.status === 'succeeded') ?? [];
   const requestedId = params.get('runId');
@@ -37,32 +30,27 @@ export default function ResultsPage() {
     mutationFn: (id: string) => api.post<Explanation>(`/runs/${encodeURIComponent(id)}/explain`),
     onSuccess: (data, id) => { queryClient.setQueryData(['explanation', id], data); },
   });
-  const publish = useMutation({
-    mutationFn: ({ id, title, summary }: { id: string; title: string; summary: string }) =>
-      api.post<Publication>(`/runs/${encodeURIComponent(id)}/publish`, { title, summary }),
-  });
   const chooseRun = (id: string) => {
     const next = new URLSearchParams(params); next.set('runId', id); setParams(next);
-    generate.reset(); publish.reset(); setPublicationSummary('');
+    generate.reset();
   };
   const p = selectedRun?.frozen_inputs?.parameters;
   const data = result.data;
   const e = data?.economics;
   const carbon = data?.carbon;
-  const emissions = carbon?.emissions_kg_co2e ?? carbon?.emissions_kg_co2;
-  const carbonUnit = carbon?.unit ?? (carbon?.gas_basis === 'CO2' ? 'kg CO₂' : 'kg CO₂e');
-  const costIntensity = e?.cost_per_m3_php ?? (p && p.volume_m3 > 0 && e ? e.total_opex_php / p.volume_m3 : undefined);
-  const energyParts = data?.energy.breakdown ? Object.entries(data.energy.breakdown).map(([title, value]) => ({ title, value })) : p ? [
+  const { value: emissions, unit: carbonUnit } = emissionsOf(carbon);
+  // Display-only ratio of two stored values; the stored results are not changed.
+  const costIntensity = p && p.volume_m3 > 0 && e ? e.total_opex_php / p.volume_m3 : undefined;
+  const energyParts = p ? [
     { title: 'Pumps', value: p.technology.pump_power_kw * p.pump_duty_hours },
     { title: 'Mixers', value: p.technology.mixer_power_kw * p.mixing_load_multiplier * p.mixing_hours },
   ] : [];
   const costParts = e ? [
     ['Electricity', e.electricity_cost_php], ['Chemicals', e.chemical_cost_php],
-    ['Labor', e.labor_php ?? e.labor_cost_php], ['Maintenance', e.maintenance_php ?? e.maintenance_cost_php],
-    ['Other non-energy', e.other_nonenergy_php ?? e.other_cost_php],
+    ['Labor', e.labor_cost_php], ['Maintenance', e.maintenance_cost_php],
+    ['Other non-energy', e.other_cost_php],
   ] as const : [];
   const narrative = explanation.data;
-  const publishForSelected = publish.variables?.id === runId;
   const generateForSelected = generate.variables === runId;
   return <div className="flex flex-col gap-6 text-pv-ink">
     <div className="flex flex-wrap items-start justify-between gap-4">
@@ -104,10 +92,10 @@ export default function ResultsPage() {
         <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
           <SectionCard>
             <h2 className="text-lg font-semibold">Energy breakdown</h2>
-            {!!energyParts.length ? <>
+            {energyParts.length ? <>
               <div aria-hidden="true" className="flex h-8 overflow-hidden rounded-lg bg-pv-chip">{energyParts.map((part, index) => <div key={part.title} className={index % 2 ? 'bg-pv-forest' : 'bg-pv-teal'} style={{ width: `${data.energy.total_kwh > 0 ? Math.max(0, Math.min(100, part.value / data.energy.total_kwh * 100)) : 0}%` }} />)}</div>
               <table className="w-full text-left text-sm"><caption className="sr-only">Energy contributions used in the visual breakdown</caption><thead><tr><th scope="col">Equipment</th><th scope="col" className="text-right">Energy (kWh)</th></tr></thead><tbody>{energyParts.map(part => <tr key={part.title} className="border-t border-pv-hairline"><th scope="row" className="py-3 font-normal">{part.title}</th><td className="text-right tabular-nums">{format(part.value)}</td></tr>)}</tbody></table>
-              {!data.energy.breakdown && <p className="text-xs text-pv-muted">Breakdown derived from this run’s frozen equipment duties.</p>}
+              <p className="text-xs text-pv-muted">Breakdown derived from this run’s frozen equipment duties.</p>
             </> : <p className="text-sm text-pv-muted">Equipment-level data is not available for this run.</p>}
             <p>Energy intensity: <span className="font-semibold">{format(data.energy.energy_intensity_kwh_per_m3, 4)} kWh/m³</span></p>
           </SectionCard>
@@ -136,15 +124,7 @@ export default function ResultsPage() {
           {!!narrative.limitations?.length && <><h3 className="font-semibold">Explanation limitations</h3><ul className="list-disc pl-5">{narrative.limitations.map(item => <li key={item}>{item}</li>)}</ul></>}
         </div> : explanation.isSuccess && <p className="text-sm text-pv-muted">No explanation has been saved for this run.</p>}
       </SectionCard>
-      <SectionCard><h2 className="text-lg font-semibold">Publish report</h2>
-        <p className="text-sm text-pv-muted">Publish a simplified snapshot of this run and its limitations for public review. The server checks publication permissions.</p>
-        <label className="flex flex-col gap-2 text-sm">Public summary (optional)
-          <textarea value={publicationSummary} onChange={event => setPublicationSummary(event.target.value)} rows={3} maxLength={2000} className="rounded-lg border border-pv-input-border p-3 focus:outline-pv-teal" />
-        </label>
-        <button type="button" disabled={publish.isPending && publishForSelected} onClick={() => publish.mutate({ id: runId!, title: `${selectedRun?.scenario_name ?? 'Scenario'} — simulation results`.replace(/[<>\u0000-\u001f]/g, '').slice(0, 160), summary: publicationSummary.trim() || 'Offline scenario analysis. Review the numerical results, source evidence, and scientific limitations.' })} className={btnPrimary + ' self-start disabled:opacity-50'}><FileText size={18} aria-hidden />{publish.isPending && publishForSelected ? 'Publishing…' : 'Publish report'}</button>
-        {publish.isError && publishForSelected && <p role="alert" className="text-pv-err-ink">{errorMessage(publish.error)}</p>}
-        {publish.isSuccess && publishForSelected && <p role="status">Published “{publish.data.title}”. Report reference: <span className="break-all">{publish.data.slug}</span>{publish.data.public_path?.startsWith('/public/') && <> · <a href={publish.data.public_path} className="text-pv-teal underline">View public report</a></>}</p>}
-      </SectionCard>
+      <PublicationPanel runId={runId} defaultTitle={`${selectedRun?.scenario_name ?? 'Scenario'} — simulation results`} />
     </>}
   </div>;
 }

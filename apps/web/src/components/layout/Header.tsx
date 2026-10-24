@@ -1,5 +1,7 @@
 import { CircleHelp, FlaskConical, LogOut, Search } from 'lucide-react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import type { FormEvent } from 'react';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../services/auth';
 import wordmark from '../../assets/pax-virentia-wordmark.png';
 
@@ -17,7 +19,20 @@ export default function Header() {
   const navigate = useNavigate();
   const displayName = user?.display_name ?? user?.email ?? 'Signed in';
   const role = user?.role ?? 'analyst';
-  const roleLabel = `${role.charAt(0).toUpperCase()}${role.slice(1)} · sample account`;
+  const roleLabel = `${role.charAt(0).toUpperCase()}${role.slice(1)}`;
+  const location = useLocation();
+  const [params] = useSearchParams();
+  const [query, setQuery] = useState('');
+  useEffect(() => {
+    // Keep the field in sync with the search page's query.
+    setQuery(location.pathname === '/search' ? params.get('q') ?? '' : '');
+  }, [location.pathname, params]);
+
+  const handleSearch = (event: FormEvent) => {
+    event.preventDefault();
+    const term = query.trim();
+    if (term) navigate(`/search?q=${encodeURIComponent(term)}`);
+  };
 
   const handleSignOut = async () => {
     await logout();
@@ -35,15 +50,18 @@ export default function Header() {
         <Link to="/" className="shrink-0 lg:hidden" aria-label="Pax Virentia utility dashboard">
           <img src={wordmark} alt="Pax Virentia" className="h-9 w-auto" />
         </Link>
-        <div className="relative hidden min-w-0 max-w-[360px] flex-1 md:block">
+        <form role="search" onSubmit={handleSearch} className="relative hidden min-w-0 max-w-[360px] flex-1 md:block">
           <Search size={20} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-pv-muted" aria-hidden="true" />
           <input
             type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
             placeholder="Search scenarios, runs and reports"
             aria-label="Search scenarios, runs and reports"
+            maxLength={200}
             className="h-11 w-full rounded-lg border border-pv-divider bg-pv-bg pl-10 pr-4 text-sm text-pv-ink placeholder:text-pv-search"
           />
-        </div>
+        </form>
         <div className="ml-auto flex shrink-0 items-center gap-2 sm:gap-4">
           <span className="hidden h-6 items-center gap-1 rounded-full bg-pv-info-bg px-2 text-xs font-medium text-pv-info md:inline-flex">
             <FlaskConical size={14} aria-hidden="true" />

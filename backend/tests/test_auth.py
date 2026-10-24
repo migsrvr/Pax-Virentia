@@ -85,9 +85,63 @@ class AuthHTTPContracts(unittest.TestCase):
         self.assertEqual(response.json()["error"]["code"], "authentication_required")
 
     def test_sign_out_revokes_the_session(self):
-        self.login()
-        self.assertEqual(self.client.post("/api/v1/auth/logout", headers={"Origin": ORIGIN}).status_code, 200)
+        csrf = self.login().json()["csrf_token"]
+        self.assertEqual(self.client.post("/api/v1/auth/logout",
+                                          headers={"Origin": ORIGIN, "X-CSRF-Token": csrf}).status_code, 200)
         self.assertEqual(self.client.get("/api/v1/auth/session").status_code, 401)
+
+    def test_sign_out_requires_origin_and_csrf(self):
+        csrf = self.login().json()["csrf_token"]
+        for headers in ({"Origin": ORIGIN}, {"X-CSRF-Token": csrf},
+                        {"Origin": "https://untrusted.example", "X-CSRF-Token": csrf},
+                        {"Origin": ORIGIN, "X-CSRF-Token": "wrong"}):
+            with self.subTest(headers=headers):
+                response = self.client.post("/api/v1/auth/logout", headers=headers)
+                self.assertEqual(response.status_code, 403)
+                self.assertEqual(response.json()["error"]["code"], "csrf_rejected")
+        self.assertEqual(self.client.get("/api/v1/auth/session").status_code, 200)
+
+    def scenario_write(self, csrf):
+        from test_api import scenario_parameters
+        return self.client.post("/api/v1/scenarios", headers={"Origin": ORIGIN, "X-CSRF-Token": csrf},
+                                json={"name": "Restored session", "kind": "baseline",
+                                      "parameters": scenario_parameters()})
+
+    def test_restored_session_reissues_a_working_csrf_token(self):
+        login = self.login(remember=True).json()
+        # A browser restart or new tab loses sessionStorage but keeps the cookie.
+        restored = self.client.get("/api/v1/auth/session")
+        self.assertEqual(restored.status_code, 200, restored.text)
+        token = restored.json()["csrf_token"]
+        self.assertEqual(token, login["csrf_token"])
+        self.assertEqual(self.client.get("/api/v1/auth/session").json()["csrf_token"], token)
+        response = self.scenario_write(token)
+        self.assertEqual(response.status_code, 201, response.text)
+
+    def test_legacy_random_csrf_sessions_are_adopted_on_restore(self):
+        self.login()
+        with self.repository.transaction() as c:
+            c.execute("UPDATE sessions SET csrf_hash='legacy-random-token-hash'")
+        token = self.client.get("/api/v1/auth/session").json()["csrf_token"]
+        self.assertEqual(self.scenario_write(token).status_code, 201)
+
+    def test_csrf_token_is_bound_to_its_own_session(self):
+        first = self.login().json()["csrf_token"]
+        other_id = str(uuid4())
+        self.repository.create_user(other_id, "analyst", email="other@example.com",
+                                    password_hash=hash_password(self.password))
+        _, other_csrf = self.repository.create_session(other_id)
+        self.assertNotEqual(first, other_csrf)
+        response = self.scenario_write(other_csrf)
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["error"]["code"], "csrf_rejected")
+
+    def test_csrf_derivation_depends_on_the_server_secret(self):
+        from app.security import derive_csrf_token
+        self.assertNotEqual(derive_csrf_token("session", secret="first-secret-value"),
+                            derive_csrf_token("session", secret="second-secret-value"))
+        self.assertEqual(derive_csrf_token("session", secret="first-secret-value"),
+                         derive_csrf_token("session", secret="first-secret-value"))
 
 
 if __name__ == "__main__":

@@ -7,13 +7,11 @@ const EXPLORE_LINKS: FooterLinkItem[] = [
   { label: 'Dashboard', to: '/public/overview' },
   { label: 'Environmental impacts', to: '/public/impacts' },
   { label: 'Scenarios', to: '/public/scenarios' },
-  { label: 'Recommendations', to: '/public/recommendations' },
 ];
 
 const TRANSPARENCY_LINKS: FooterLinkItem[] = [
   { label: 'Published reports', to: '/public/reports#published-reports' },
   { label: 'Methodology', to: '/public/reports#methodology' },
-  { label: 'Assumptions', to: '/public/reports#assumptions' },
   { label: 'Glossary', to: '/public/reports#glossary' },
 ];
 
@@ -50,11 +48,11 @@ export default function PublicFooter({ current }: { current?: string } = {}) {
         <div className="flex flex-col gap-4 lg:flex-[422_0_0]">
           <img src={logoPaxVirentia} alt="Pax Virentia" className="h-10 w-[115px] object-contain" />
           <p className="max-w-[420px] text-[14px] leading-5 text-pv-ink-light">
-            Published sustainability summaries for the Sample Water District’s representative
-            treatment plant: energy use, CO₂e emissions, operating costs and ecosystem indicators.
+            Reviewed sustainability summaries for a representative water-treatment plant: energy
+            use, electricity-associated emissions, operating costs and ecosystem indicators.
           </p>
           <span className="inline-flex h-6 w-fit items-center rounded-full bg-pv-muted-bg px-2 text-[12px] font-medium leading-4 text-pv-ink-light">
-            Sample data · simulated estimates
+            Simulated estimates · offline model
           </span>
         </div>
 
@@ -90,8 +88,8 @@ export default function PublicFooter({ current }: { current?: string } = {}) {
       <div className="border-t border-pv-line-soft">
         <div className="mx-auto w-full max-w-[1264px] px-6 py-4 lg:px-8">
           <p className="text-[12px] leading-4 text-pv-ink-light">
-            Figures on this site are simulated estimates from an offline model and sample data. They
-            are not live measurements, validated results or regulatory approvals. © 2026 Pax Virentia
+            Figures on this site are simulated estimates from an offline model. They are not live
+            measurements, validated results or regulatory approvals. © 2026 Pax Virentia
             research prototype.
           </p>
         </div>

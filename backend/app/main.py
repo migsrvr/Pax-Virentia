@@ -89,7 +89,7 @@ def create_app(repository=None, code_version=None, allowed_origins=None):
     application.state.allowed_origins = policy.origins
     application.state.origin_policy = policy
     application.add_middleware(TrustedOriginCORSMiddleware, origin_policy=policy,
-                               allow_credentials=True, allow_methods=["GET", "POST"],
+                               allow_credentials=True, allow_methods=["GET", "POST", "PUT", "DELETE"],
                                allow_headers=["Content-Type", "Idempotency-Key", "X-CSRF-Token"])
 
     @application.middleware("http")
@@ -101,16 +101,18 @@ def create_app(repository=None, code_version=None, allowed_origins=None):
             response.headers["Cache-Control"] = "private, no-store"
         return response
 
-    def error_response(request, status_code, code, message, fields=None):
+    def error_response(request, status_code, code, message, fields=None, details=None):
         request_id = getattr(request.state, "request_id", str(uuid4()))
-        return JSONResponse(status_code=status_code,
-                            content={"error": {"code": code, "message": message,
-                                               "field_errors": fields or [], "request_id": request_id}},
+        error = {"code": code, "message": message, "field_errors": fields or [], "request_id": request_id}
+        if details is not None:
+            error["details"] = details
+        return JSONResponse(status_code=status_code, content={"error": error},
                             headers={"X-Request-ID": request_id, "Cache-Control": "private, no-store"})
 
     @application.exception_handler(ServiceError)
     async def service_error(request: Request, error: ServiceError):
-        return error_response(request, error.status_code, error.code, error.message, error.field_errors)
+        return error_response(request, error.status_code, error.code, error.message, error.field_errors,
+                              error.details)
 
     @application.exception_handler(RequestValidationError)
     async def validation_error(request: Request, error: RequestValidationError):

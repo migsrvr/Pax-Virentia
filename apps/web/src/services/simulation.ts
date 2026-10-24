@@ -43,23 +43,54 @@ export type Run = {
   error?: { code?: string; message?: string } | null; error_message?: string;
   frozen_inputs?: { parameters: Parameters; revision_no: number; provenance?: Record<string, unknown> };
 };
+export type MetricStatus = 'valid' | 'not_estimable' | string;
+export type ResultMetric = {
+  key: 'energy' | 'carbon' | 'economics' | 'ecology' | string; value: number | null;
+  unit: string | null; status: MetricStatus; interval_key: string; reason?: string; required_evidence?: string[];
+};
+/** Mirrors backend/app/services/simulations.py `calculate_snapshot` plus stored run identity. */
 export type Results = {
-  energy: { total_kwh: number; energy_intensity_kwh_per_m3: number | null; breakdown?: Record<string, number> };
-  carbon?: { emissions_kg_co2e?: number; emissions_kg_co2?: number; unit?: string; gas_basis: string };
-  economics?: { total_opex_php: number; cost_per_m3_php?: number; electricity_cost_php: number;
-    chemical_cost_php: number; labor_cost_php?: number; maintenance_cost_php?: number; other_cost_php?: number;
-    labor_php?: number; maintenance_php?: number; other_nonenergy_php?: number };
-  ecology?: { status: string; value: number | null; unit?: string; reason: string; required_evidence: string[] };
+  run_id: string; snapshot_hash: string; code_version: string;
+  requested_modules: string[];
+  energy: { total_kwh: number; energy_intensity_kwh_per_m3: number | null; status: MetricStatus; warnings: string[] };
+  carbon?: { emissions_kg_co2e?: number; emissions_kg_co2?: number; unit: 'kg CO2e' | 'kg CO2' | string;
+    gas_basis: 'CO2e' | 'CO2' | string; grid_region: string; factor_kg_per_kwh: number };
+  economics?: { electricity_cost_php: number; chemical_cost_php: number; labor_cost_php: number;
+    maintenance_cost_php: number; other_cost_php: number; total_opex_php: number; chemical_kg_used: number;
+    net_savings_php: number | null; simple_payback_years: number | null };
+  ecology?: { indicator_key: string; status: MetricStatus; value: number | null; unit: string | null;
+    reason: string; required_evidence: string[] };
+  metrics: ResultMetric[];
   provenance: Record<string, unknown>; warnings: string[];
 };
 export type Comparison = {
+  baseline_run_id: string; intervention_run_id: string;
   compatible: boolean; volume_m3: number; period_start: string; period_end: string; currency: string;
   net_savings_php: number | null;
   deltas: { key: string; baseline: number | null; intervention: number | null; delta: number | null;
     delta_pct: number | null; unit: string | null; baseline_status: string; intervention_status: string }[];
 };
 export type Explanation = { narrative?: string; summary?: string; key_findings?: string[]; limitations?: string[]; generated_at?: string };
-export type Publication = { id: string; slug: string; title: string; summary: string; published_at: string; public_path?: string };
+export type RunInputs = {
+  run_id: string; scenario_id: string; scenario_name: string; kind: 'baseline' | 'intervention';
+  revision_no: number; status: Run['status']; parameters: Parameters; requested_modules: string[];
+};
+
+/** Flatten nested frozen inputs into labelled rows for display. */
+export function assumptionRows(value: unknown, prefix = ''): [string, string][] {
+  if (value === null || value === undefined) return [[prefix, 'Not supplied']];
+  if (Array.isArray(value)) return [[prefix, value.map(item => typeof item === 'object' ? JSON.stringify(item) : String(item)).join(', ')]];
+  if (typeof value === 'object') return Object.entries(value).flatMap(([key, entry]) => assumptionRows(entry, prefix ? `${prefix} / ${key}` : key));
+  return [[prefix.replace(/_/g, ' '), String(value)]];
+}
+
+/** Emissions value and unit, preserving a CO2-only factor's meaning. */
+export function emissionsOf(carbon: Results['carbon']): { value: number | undefined; unit: string } {
+  return {
+    value: carbon?.emissions_kg_co2e ?? carbon?.emissions_kg_co2,
+    unit: (carbon?.unit ?? (carbon?.gas_basis === 'CO2' ? 'kg CO2' : 'kg CO2e')).replace('CO2', 'CO₂'),
+  };
+}
 
 export async function listAll<T>(path: string): Promise<T[]> {
   const items: T[] = [];

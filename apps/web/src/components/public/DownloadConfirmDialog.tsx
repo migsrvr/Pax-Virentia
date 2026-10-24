@@ -1,12 +1,13 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { PUBLIC_DOWNLOAD_DIALOG } from '../../services/mockData';
+import { downloadFile } from '../../services/api';
+import { errorMessage } from '../../services/simulation';
 import iconDownloadConfirm from '../../assets/pv/icon-download-confirm.svg';
 
 /**
- * P08 · Download confirmation (Figma 45:2) — modal shown once a report download
- * has started, on the report detail page and the published report rows. Copy
- * verbatim from the frame.
+ * P08 · Download confirmation (Figma 45:2). Starts the real download of a
+ * published report file and reports whether it succeeded; "download it again"
+ * repeats the request.
  */
 
 const OUTLINE_BTN =
@@ -15,13 +16,32 @@ const PRIMARY_BTN =
   'inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-lg border border-transparent bg-pv-action px-4 text-[14px] font-semibold leading-5 text-white transition-opacity hover:opacity-90';
 
 type DownloadConfirmDialogProps = {
-  /** File line under the title, e.g. "…Jan 2026.pdf · 6 pages · 1.2 MB". */
-  file: string;
+  /** API path of the file, e.g. /public/reports/{slug}/download?format=pdf */
+  path: string;
+  fileName: string;
   onClose: () => void;
 };
 
-export default function DownloadConfirmDialog({ file, onClose }: DownloadConfirmDialogProps) {
+type State = { phase: 'downloading' } | { phase: 'started' } | { phase: 'failed'; message: string };
+
+export default function DownloadConfirmDialog({ path, fileName, onClose }: DownloadConfirmDialogProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
+  const [state, setState] = useState<State>({ phase: 'downloading' });
+
+  const start = useCallback(() => {
+    setState({ phase: 'downloading' });
+    downloadFile(path, fileName)
+      .then(() => setState({ phase: 'started' }))
+      .catch((error: unknown) => setState({ phase: 'failed', message: errorMessage(error) }));
+  }, [path, fileName]);
+
+  // Start exactly once per dialog (StrictMode runs mount effects twice in development).
+  const started = useRef(false);
+  useEffect(() => {
+    if (started.current) return;
+    started.current = true;
+    start();
+  }, [start]);
 
   useEffect(() => {
     const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -56,7 +76,8 @@ export default function DownloadConfirmDialog({ file, onClose }: DownloadConfirm
     };
   }, [onClose]);
 
-  const copy = PUBLIC_DOWNLOAD_DIALOG;
+  const title = state.phase === 'downloading' ? 'Preparing your download…'
+    : state.phase === 'started' ? 'Your download has started' : 'The download didn’t start';
 
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-pv-overlay-scrim" onClick={onClose}>
@@ -75,39 +96,32 @@ export default function DownloadConfirmDialog({ file, onClose }: DownloadConfirm
               <img src={iconDownloadConfirm} alt="" className="size-6" />
             </div>
             <div className="flex min-w-0 flex-col items-start gap-1">
-              <h2
-                id="download-dialog-title"
-                className="text-[24px] font-semibold leading-8 tracking-[-0.24px] text-pv-ink"
-              >
-                {copy.title}
+              <h2 id="download-dialog-title" className="text-[24px] font-semibold leading-8 tracking-[-0.24px] text-pv-ink">
+                {title}
               </h2>
-              <p className="text-[14px] leading-5 text-pv-ink-light">{file}</p>
+              <p className="break-all text-[14px] leading-5 text-pv-ink-light">{fileName}</p>
             </div>
           </div>
 
-          <p className="w-full text-[14px] leading-5 text-pv-ink">{copy.body}</p>
-
-          <p className="text-[12px] leading-4 text-pv-ink-light">
-            {copy.retryLead}
-            <button
-              type="button"
-              onClick={() => {
-                // Prototype: the download is simulated, so there is nothing to re-run.
-              }}
-              className="text-[12px] font-semibold leading-4 text-pv-action hover:underline"
-            >
-              {copy.retryLink}
-            </button>
-            {copy.retryTail}
+          <p role="status" className="w-full text-[14px] leading-5 text-pv-ink">
+            {state.phase === 'failed'
+              ? state.message
+              : 'Every page is labeled as simulated estimates, and the report ends with the methodology and limitations.'}
           </p>
 
+          {state.phase !== 'downloading' ? (
+            <p className="text-[12px] leading-4 text-pv-ink-light">
+              {state.phase === 'failed' ? 'You can ' : 'If nothing happens, '}
+              <button type="button" onClick={start} className="text-[12px] font-semibold leading-4 text-pv-action hover:underline">
+                download it again
+              </button>
+              .
+            </p>
+          ) : null}
+
           <div className="flex w-full flex-wrap items-start justify-end gap-4">
-            <button type="button" onClick={onClose} className={OUTLINE_BTN}>
-              {copy.back}
-            </button>
-            <Link to="/public/reports" className={PRIMARY_BTN}>
-              {copy.browse}
-            </Link>
+            <button type="button" onClick={onClose} className={OUTLINE_BTN}>Back to report</button>
+            <Link to="/public/reports" className={PRIMARY_BTN}>Browse all reports</Link>
           </div>
         </div>
       </div>

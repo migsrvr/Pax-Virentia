@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, ArrowRight } from 'lucide-react';
 import { api } from '../services/api';
 import { buildParameters, errorMessage, hydrateDraft, initialDraft, loadSavedScenario, validateDraft } from '../services/simulation';
-import type { Draft, Factor, Revision, Scenario, Technology } from '../services/simulation';
+import type { Draft, Factor, Revision, RunInputs, Scenario, Technology } from '../services/simulation';
 import { dismissRun, foregroundRun, retryRun, submitRun, useRunState } from '../services/runLifecycle';
 import { Chip, SectionCard, btnPrimary, btnSecondary } from './scenarios/shared';
 import OperatingConditionsStep from './scenarios/OperatingConditionsStep';
@@ -19,10 +19,16 @@ const steps = ['Scenario and process', 'Operating conditions', 'Costs and emissi
 export default function ScenariosPage() {
   const [params] = useSearchParams();
   const scenarioId = params.get('scenarioId');
-  return <ScenarioEditor key={scenarioId ?? 'new'} scenarioId={scenarioId} />;
+  // ?fromRunId= starts a NEW scenario from a stored run's frozen inputs.
+  const fromRunId = scenarioId === null ? params.get('fromRunId') : null;
+  const fromKind = params.get('kind') === 'baseline' ? 'baseline' : 'intervention';
+  return <ScenarioEditor key={scenarioId ?? (fromRunId ? `from-${fromRunId}` : 'new')} scenarioId={scenarioId}
+    fromRunId={fromRunId} fromKind={fromKind} />;
 }
 
-function ScenarioEditor({ scenarioId }: { scenarioId: string | null }) {
+function ScenarioEditor({ scenarioId, fromRunId = null, fromKind = 'intervention' }: {
+  scenarioId: string | null; fromRunId?: string | null; fromKind?: Draft['kind'];
+}) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const run = useRunState();
@@ -45,6 +51,24 @@ function ScenarioEditor({ scenarioId }: { scenarioId: string | null }) {
   } });
   const technologies = catalogs.data?.technologies ?? [];
   const factors = catalogs.data?.factors ?? [];
+  const source = useQuery({
+    queryKey: ['run-inputs', fromRunId],
+    queryFn: () => api.get<RunInputs>(`/runs/${encodeURIComponent(fromRunId!)}/inputs`),
+    enabled: fromRunId !== null, retry: false,
+  });
+  useEffect(() => {
+    if (!fromRunId || hydrated || hydrationError || !source.data || !catalogs.isSuccess || !catalogs.data) return;
+    try {
+      const inputs = source.data;
+      const restored = hydrateDraft({ id: inputs.scenario_id, name: inputs.scenario_name, kind: inputs.kind },
+        { id: '', scenario_id: inputs.scenario_id, revision_no: inputs.revision_no, parameters: inputs.parameters },
+        catalogs.data.technologies, catalogs.data.factors);
+      // A prefilled draft is unsaved: saving creates a new scenario rather than a revision.
+      setDraft({ ...restored, name: '', kind: fromKind });
+      setHydrated(true);
+      setNotice(`Started from the frozen inputs of “${inputs.scenario_name}” (revision ${inputs.revision_no}). Name the new ${fromKind}, change what you want to test, then save.`);
+    } catch (error) { setHydrationError(errorMessage(error)); }
+  }, [fromRunId, fromKind, hydrated, hydrationError, source.data, catalogs.isSuccess, catalogs.data]);
   const resume = useQuery({ queryKey: ['scenario-resume', scenarioId], queryFn: () => loadSavedScenario(scenarioId!), enabled: scenarioId !== null, retry: false, refetchOnMount: 'always' });
   useEffect(() => {
     if (!scenarioId || hydrated || !resume.isFetchedAfterMount || !resume.isSuccess || resume.isFetching || !resume.data || !catalogs.isFetchedAfterMount || !catalogs.isSuccess || catalogs.isFetching || !catalogs.data || hydrationError) return;
@@ -127,6 +151,13 @@ function ScenarioEditor({ scenarioId }: { scenarioId: string | null }) {
       <button type="button" className={btnSecondary} onClick={() => { setHydrationError(''); void resume.refetch(); void catalogs.refetch(); }}>Retry loading</button></div>
   </SectionCard>;
   if (scenarioId !== null && !hydrated) return <SectionCard><h1 className="text-2xl font-semibold">Resume saved scenario</h1><p role="status">Loading the scenario, latest revision, and versioned catalogs…</p></SectionCard>;
+  if (fromRunId !== null && (source.isError || catalogs.isError || hydrationError)) return <SectionCard>
+    <h1 className="text-2xl font-semibold">Can’t start from this run</h1>
+    <p role="alert" className="text-pv-err-ink">{hydrationError || errorMessage(source.error ?? catalogs.error)}</p>
+    <div className="flex flex-wrap gap-3"><Link to="/scenarios" className={btnPrimary}>Start a blank scenario</Link>
+      <button type="button" className={btnSecondary} onClick={() => { setHydrationError(''); void source.refetch(); void catalogs.refetch(); }}>Retry loading</button></div>
+  </SectionCard>;
+  if (fromRunId !== null && !hydrated) return <SectionCard><h1 className="text-2xl font-semibold">Start from a stored run</h1><p role="status">Loading the run’s frozen inputs and versioned catalogs…</p></SectionCard>;
   return <div className="flex flex-col gap-6 text-pv-ink">
     <div className="flex flex-wrap items-center justify-between gap-4">
       <div><nav aria-label="Breadcrumb" className="mb-2 text-xs text-pv-muted"><Link to="/">Workspace</Link> / Scenarios</nav>

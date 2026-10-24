@@ -2,7 +2,8 @@
 
 from fastapi import APIRouter, Depends, Request, Response
 
-from app.api.dependencies import SESSION_COOKIE, get_repository, require_session, require_trusted_origin
+from app.api.dependencies import (SESSION_COOKIE, get_repository, require_session, require_session_write,
+                                  require_trusted_origin)
 from app.api.schemas import LoginRequest
 from app.config import settings
 from app.services.auth import AuthService
@@ -24,7 +25,7 @@ def login(body: LoginRequest, request: Request, response: Response, service=Depe
             "expires_in_hours": result["expires_in_hours"]}
 
 
-@router.post("/logout", dependencies=[Depends(require_session)])
+@router.post("/logout", dependencies=[Depends(require_session_write)])
 def logout(request: Request, response: Response, service=Depends(get_auth_service)):
     service.logout(request.cookies.get(SESSION_COOKIE))
     response.delete_cookie(SESSION_COOKIE, path="/", secure=True, httponly=True, samesite="lax")
@@ -32,5 +33,8 @@ def logout(request: Request, response: Response, service=Depends(get_auth_servic
 
 
 @router.get("/session")
-def session(actor=Depends(require_session)):
-    return {"user": AuthService.public_user(actor)}
+def session(request: Request, actor=Depends(require_session), repository=Depends(get_repository)):
+    # The CSRF token is derived from the session cookie, so a restored browser
+    # or a new tab regains write access without storing the token client-side.
+    return {"user": AuthService.public_user(actor),
+            "csrf_token": repository.restore_csrf(request.cookies.get(SESSION_COOKIE))}
